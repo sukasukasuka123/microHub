@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"strconv"
 	"time"
@@ -16,7 +17,6 @@ const defaultCount = 3
 
 type MainHubHandler struct{}
 
-// ServiceName 与 registry.yaml hub 的 name 字段一致
 func (h *MainHubHandler) ServiceName() string { return "hub" }
 
 // Execute 路由策略：
@@ -25,7 +25,8 @@ func (h *MainHubHandler) ServiceName() string { return "hub" }
 //	req != nil  → 上游调用，按 service_name 或 method 路由
 func (h *MainHubHandler) Execute(req *pb.ToolRequest) ([]hubbase.DispatchTarget, error) {
 	if req == nil {
-		return h.broadcast(), nil
+		log.Println("nil req!")
+		return nil, nil
 	}
 	if req.ServiceName != "" {
 		return h.routeByName(req)
@@ -33,7 +34,6 @@ func (h *MainHubHandler) Execute(req *pb.ToolRequest) ([]hubbase.DispatchTarget,
 	return h.routeByMethod(req)
 }
 
-// OnResults 记录派发结果日志
 func (h *MainHubHandler) OnResults(results []hubbase.DispatchResult) {
 	for _, r := range results {
 		if !r.AllOK() {
@@ -105,9 +105,37 @@ func main() {
 		log.Fatalf("%v", err)
 	}
 
-	// hub.Serve(监听地址, handler实现, 定时派发间隔)
-	// 传 0 则不启动定时派发，只响应上游调用
-	if err := hubbase.Serve(":50051", &MainHubHandler{}, 5*time.Second); err != nil {
-		log.Fatalf("%v", err)
-	}
+	// New 初始化 BaseHub，建好连接池，不监听端口
+	hub := hubbase.New(&MainHubHandler{})
+
+	// ── 先在 goroutine 里启动 gRPC 监听 ─────────────────────
+	// ServeAsync 复用当前 hub 实例的连接池，与后续 Dispatch 共享同一套连接。
+	// 定时广播间隔 5s，传 0 则不启动定时派发。
+	go func() {
+		if err := hub.ServeAsync(":50051", 5*time.Second); err != nil {
+			log.Fatalf("[Hub] ServeAsync 退出: %v", err)
+		}
+	}()
+
+	// 等待 gRPC 服务就绪（端口 listen 完成）再发送
+	// 简单 sleep 足够；生产环境可换成对 :50051 的 TCP 探测循环
+	time.Sleep(100 * time.Millisecond)
+
+	// ── 主动发送：按 service_name 路由到 hello ───────────────
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	hub.Dispatch(ctx, &pb.ToolRequest{
+		ServiceName: "hello",
+		Params:      map[string]string{"count": strconv.Itoa(defaultCount)},
+	})
+	cancel()
+
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 10*time.Second)
+	hub.Dispatch(ctx1, &pb.ToolRequest{
+		ServiceName: "world",
+		Params:      map[string]string{"count": strconv.Itoa(defaultCount)},
+	})
+	cancel1()
+
+	// ── 主进程阻塞，保持 gRPC 服务持续运行 ──────────────────
+	select {}
 }

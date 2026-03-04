@@ -49,11 +49,6 @@ func (g *grpcConnControl) Ping(conn *grpc.ClientConn) error {
 }
 
 // ── connPoolManager：addr → Pool 映射 ────────────────────
-//
-// 改动说明：
-//   - 新增 rebuild(addrs) 方法，供热更新时调用：关闭已消失的池、新建新增的池
-//   - get() 仅做读取，不再懒创建；未找到时返回 nil 并记录告警
-//   - 原有的懒创建逻辑移入 ensurePool()，仅在 rebuild 里被调用
 
 type connPoolManager struct {
 	mu    sync.RWMutex
@@ -66,10 +61,6 @@ func newConnPoolManager() *connPoolManager {
 	}
 }
 
-// rebuild 根据最新的地址集合更新连接池：
-//   - 新增地址 → 建池
-//   - 消失地址 → 关池
-//   - 已有地址 → 保持不动（不重建，避免中断正在使用的连接）
 func (m *connPoolManager) rebuild(addrs []string) {
 	addrSet := make(map[string]struct{}, len(addrs))
 	for _, a := range addrs {
@@ -81,7 +72,6 @@ func (m *connPoolManager) rebuild(addrs []string) {
 
 	cfg := registry.GetGrpcPoolConfig()
 
-	// 关闭已消失的池
 	for addr, p := range m.pools {
 		if _, keep := addrSet[addr]; !keep {
 			p.Close()
@@ -90,7 +80,6 @@ func (m *connPoolManager) rebuild(addrs []string) {
 		}
 	}
 
-	// 新建新增的池
 	for _, addr := range addrs {
 		if _, exists := m.pools[addr]; exists {
 			continue
@@ -110,7 +99,6 @@ func (m *connPoolManager) rebuild(addrs []string) {
 	}
 }
 
-// get 返回指定地址的连接池；若不存在返回 nil（调用方需判断）。
 func (m *connPoolManager) get(addr string) *pool.Pool[*grpc.ClientConn] {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -157,12 +145,8 @@ func (r DispatchResult) AllOK() bool {
 
 type HubHandler interface {
 	ServiceName() string
-	// Execute 决定本次派发的目标列表
-	// req == nil 表示定时触发，req != nil 表示上游调用
 	Execute(req *pb.ToolRequest) ([]DispatchTarget, error)
-	// OnResults 接收所有派发结果
 	OnResults(results []DispatchResult)
-	// Addrs 返回当前 handler 关心的所有下游地址（用于连接池热更新）
 	Addrs() []string
 }
 
@@ -173,7 +157,6 @@ type BaseHub struct {
 	handler HubHandler
 	pm      *connPoolManager
 
-	// ctx / cancel 控制 dispatchLoop 和整个 Hub 的生命周期
 	ctx    context.Context
 	cancel context.CancelFunc
 }
@@ -186,7 +169,6 @@ func New(handler HubHandler) *BaseHub {
 		ctx:     ctx,
 		cancel:  cancel,
 	}
-	// 根据初始地址建池
 	b.pm.rebuild(handler.Addrs())
 	return b
 }
@@ -198,12 +180,29 @@ func Serve(addr string, handler HubHandler, loopInterval time.Duration) error {
 	return b.serve(addr, loopInterval)
 }
 
+// ServeAsync 在当前 BaseHub 实例上启动 gRPC 监听，供外部在 goroutine 里调用。
+//
+// 与包级 Serve 的区别：
+//   - Serve    内部重新 New 一个 BaseHub，连接池与调用方的 hub 实例无关
+//   - ServeAsync 复用当前实例的连接池，Dispatch 和 gRPC 入站共享同一套连接
+//
+// 典型用法：
+//
+//	hub := hubbase.New(handler)
+//	go func() {
+//	    if err := hub.ServeAsync(":50051", 0); err != nil {
+//	        log.Fatalf("serve: %v", err)
+//	    }
+//	}()
+func (b *BaseHub) ServeAsync(addr string, loopInterval time.Duration) error {
+	return b.serve(addr, loopInterval)
+}
+
 func (b *BaseHub) serve(addr string, loopInterval time.Duration) error {
 	if loopInterval > 0 {
 		go b.dispatchLoop(loopInterval)
 	}
 
-	// 热更新监听：registry 配置变化时重建连接池
 	go b.watchRegistry()
 
 	lis, err := net.Listen("tcp", addr)
@@ -215,26 +214,21 @@ func (b *BaseHub) serve(addr string, loopInterval time.Duration) error {
 	pb.RegisterHubServiceServer(srv, b)
 	log.Printf("[%s] 启动 gRPC 服务 %s", b.handler.ServiceName(), addr)
 
-	// 优雅关闭：srv.Serve 返回后清理资源
 	defer func() {
-		b.cancel()      // 通知所有 goroutine 退出
-		b.pm.closeAll() // 关闭所有连接池
+		b.cancel()
+		b.pm.closeAll()
 	}()
 	return srv.Serve(lis)
 }
 
-// watchRegistry 监听注册表变化，触发连接池热更新。
-// 每隔一段时间轮询 handler.Addrs() 与当前池集合做 diff，
-// 避免在 registry 层侵入回调机制。
 func (b *BaseHub) watchRegistry() {
 	log.Printf("[%s] watchRegistry 已启动（阻塞模式）", b.handler.ServiceName())
 	for {
-		// ── 核心改动：阻塞等待，无变更时不占 CPU ──
 		select {
 		case <-b.ctx.Done():
 			log.Printf("[%s] watchRegistry 已退出", b.handler.ServiceName())
 			return
-		case <-registry.ChangeCh(): // 通过公有函数控制私有管道
+		case <-registry.ChangeCh():
 			b.pm.rebuild(b.handler.Addrs())
 			log.Printf("[%s] 连接池已热更新", b.handler.ServiceName())
 		}
@@ -309,38 +303,30 @@ func (b *BaseHub) DispatchStream(stream pb.HubService_DispatchStreamServer) erro
 
 // ── 定时派发 ─────────────────────────────────────────────
 
-func (b *BaseHub) trigger() {
-	targets, err := b.handler.Execute(nil)
-	if err != nil {
-		log.Printf("[%s] trigger Execute 失败: %v", b.handler.ServiceName(), err)
-		return
-	}
-	// 传入 hub 级 ctx：hub 关闭时正在进行的 trigger 也会被取消
-	results := b.sendAll(b.ctx, targets)
-	b.handler.OnResults(results)
-}
+// func (b *BaseHub) trigger() {
+// 	targets, err := b.handler.Execute(nil)
+// 	if err != nil {
+// 		log.Printf("[%s] trigger Execute 失败: %v", b.handler.ServiceName(), err)
+// 		return
+// 	}
+// 	results := b.sendAll(b.ctx, targets)
+// 	b.handler.OnResults(results)
+// }
 
 func (b *BaseHub) dispatchLoop(interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	log.Printf("[%s] dispatch loop 已启动，间隔 %s", b.handler.ServiceName(), interval)
+	log.Printf("[%s] dispatch loop 已启动", b.handler.ServiceName())
 	for {
 		select {
 		case <-b.ctx.Done():
 			log.Printf("[%s] dispatch loop 已退出", b.handler.ServiceName())
 			return
-		case <-ticker.C:
-			b.trigger()
+			// case <-ticker.C:
+			// 	b.trigger()
 		}
 	}
 }
 
 // ── 底层发送（并发版） ────────────────────────────────────
-//
-// 改动说明：
-//   - 原串行 for 循环改为 goroutine + WaitGroup 并发派发
-//   - results 切片预分配固定槽位，每个 goroutine 写自己的下标，无需加锁
-//   - pool 不存在时快速失败并记录告警，不阻塞其他 target
 
 func (b *BaseHub) sendAll(ctx context.Context, targets []DispatchTarget) []DispatchResult {
 	results := make([]DispatchResult, len(targets))
@@ -353,7 +339,6 @@ func (b *BaseHub) sendAll(ctx context.Context, targets []DispatchTarget) []Dispa
 
 			p := b.pm.get(target.Addr)
 			if p == nil {
-				// 地址不在池中（热更新尚未完成或地址有误）
 				log.Printf("[%s] sendAll: 连接池不存在 addr=%s，跳过",
 					b.handler.ServiceName(), target.Addr)
 				results[idx] = DispatchResult{
@@ -415,8 +400,7 @@ func (b *BaseHub) callStream(ctx context.Context, addr string, req *pb.ToolReque
 	defer func() {
 		s := res.Conn.GetState()
 		if s == connectivity.Shutdown || s == connectivity.TransientFailure {
-			// 连接已损坏，丢弃而非归还（池的 Reset/Close 会处理）
-			// p.Discard(res) 池子没有丢弃的api
+			// 连接已损坏，丢弃而非归还
 		} else {
 			p.Put(res)
 		}
@@ -453,4 +437,54 @@ func errorResp(serviceName, msg string) *pb.ToolResponse {
 		Status:      "error",
 		Result:      msg,
 	}
+}
+
+// ════════════════════════════════════════════════════════════
+//  公开 API：主动发送
+// ════════════════════════════════════════════════════════════
+
+// Handler 返回当前绑定的 HubHandler。
+// 场景：main 里需要在 Serve 阻塞前单独访问 handler 时使用。
+func (b *BaseHub) Handler() HubHandler {
+	return b.handler
+}
+
+// Dispatch 主动向下游发送一次请求，阻塞直到所有响应收完后返回。
+//
+// 与定时触发（trigger）、gRPC 入站（DispatchSimple/DispatchStream）
+// 三条路径最终都收敛到同一个 sendAll，行为完全一致。
+//
+// 参数：
+//
+//	ctx  — 调用方控制的超时上下文，推荐设置合理的 deadline
+//	req  — 要发送的请求；框架会调用 handler.Execute(req) 决定路由目标
+//
+// 返回：
+//
+//	[]DispatchResult — 每个目标的响应列表；路由失败或无目标时返回 nil
+//
+// 示例：
+//
+//	hub := hubbase.New(handler)
+//	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+//	defer cancel()
+//	results := hub.Dispatch(ctx, &pb.ToolRequest{
+//	    ServiceName: "hello",
+//	    Params:      map[string]string{"count": "3"},
+//	})
+func (b *BaseHub) Dispatch(ctx context.Context, req *pb.ToolRequest) []DispatchResult {
+	targets, err := b.handler.Execute(req)
+	if err != nil {
+		log.Printf("[%s] Dispatch Execute 失败: %v", b.handler.ServiceName(), err)
+		return nil
+	}
+	if len(targets) == 0 {
+		log.Printf("[%s] Dispatch 无匹配目标 service=%s method=%s",
+			b.handler.ServiceName(), req.ServiceName, req.Method)
+		return nil
+	}
+	results := b.sendAll(ctx, targets)
+	log.Println(" send info (DispatchTarget): ", targets)
+	b.handler.OnResults(results)
+	return results
 }

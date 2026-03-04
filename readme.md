@@ -11,7 +11,8 @@ microHub/
 ├── config/
 │   └── registry.yaml        # 服务注册表 + 连接池配置（唯一数据源）
 ├── hub/
-│   └── main.go              # Hub 实例：路由策略 + 启动入口
+│   ├── main.go              # Hub 实例：路由策略 + 启动入口
+│   └── hub_test.go              # 框架测试代码
 ├── tools/
 │   ├── hello/main.go        # Tool 示例
 │   └── world/main.go        # Tool 示例
@@ -149,7 +150,7 @@ services:
     - name: "main_hub"
       addr: "localhost:50061"
 ```
-
+**需要改动关于hub的描述**
 `test_hub` 的 `Execute` 只路由到待验证的 tool，通过后调用 `registry.MarkPassed()`，`main_hub` 的 `Execute` 只派发 `registry.GetPassedTools()` 中的 tool。两个 Hub 平行运行，互不干扰。
 
 ---

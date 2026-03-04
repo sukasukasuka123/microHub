@@ -1,0 +1,28 @@
+services:
+  tools:
+    - name: "hello"
+      addr: "localhost:50052"
+      method: "Hello"
+    - name: "world"  
+      addr: "localhost:50053"
+      method: "World"
+  hubs:
+    - name: "main_hub"
+      addr: "localhost:50051"
+      registered_at: "2024-01-01T00:00:00Z"
+# ── 连接池参数 ─────────────────────────────────────────────
+# 建模方式：
+#   ActiveConns  = QPS × hold_ms / 1000
+#   max_size     = min(ceil(ActiveConns × burst_factor), floor(memory_mb / conn_mb))
+#   min_size     = max(ceil(valley_QPS × hold_ms/1000 × warmup_factor), max_size × 0.05)
+#   idle_buffer  = 1 - avg_active / max_size    （建议 0.4~0.7）
+pool:
+  grpc_conn:
+    min_size:             24      # 谷值：1000QPS × 20ms/1000 × 1.2
+    max_size:             130     # 峰值：5000QPS × 20ms/1000 × 1.3
+    idle_buffer_factor:   0.55    # 1 - avg_active(60)/max_size(130)
+    survive_time_sec:     180     # 空闲连接存活时间（秒）
+    monitor_interval_sec: 6       # survive_time / 30
+    max_retries:          3
+    retry_interval_ms:    200     # >= 连接创建耗时 × 2
+    reconnect_on_get:     false   # gRPC 自带重连，池层无需重连检查

@@ -176,6 +176,13 @@ AI 生成 tools/xxx/main.go
     → main_hub 热更新，新 tool 上线
 ```
 
+## 相关单元测试和基准测试的结果：
+
+![unit_test.log](test_log/unit_test.log)
+
+![Benchmark.log](test_log/Benchmark.log)
+
+
 ---
 
 ## 连接池参数说明

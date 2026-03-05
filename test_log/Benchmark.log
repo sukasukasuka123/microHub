@@ -1,0 +1,12 @@
+BenchmarkDispatch_Hello-8
+    1346           1668585 ns/op            7601 B/op        140 allocs/op
+PASS
+ok      github.com/sukasukasuka123/microHub/hub 4.127s
+BenchmarkDispatch_Parallel-8
+    2912            902291 ns/op            7593 B/op        140 allocs/op
+PASS
+ok      github.com/sukasukasuka123/microHub/hub 4.549s
+BenchmarkDispatch_MultiTool-8
+     319           3213871 ns/op           15280 B/op        280 allocs/op
+PASS
+ok      github.com/sukasukasuka123/microHub/hub 2.363s

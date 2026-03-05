@@ -1,0 +1,192 @@
+Running tool: G:\Tools\golang\bin\go.exe test -test.fullpath=true -timeout 30s -run ^TestDispatch_Hello$ github.com/sukasukasuka123/microHub/hub
+
+2026/03/05 04:23:41 [Registry] 注册表已更新 — tools=2 Hubs=1
+
+=== tools ===
+  [ ] [0] name=hello      addr=localhost:50052        method=Hello
+  [ ] [1] name=world      addr=localhost:50053        method=World
+=== pool.grpc_conn ===
+  min=24 max=130 idle_buf=0.55 survive=180s monitor=6s retries=3 retry_ms=200 reconnect=false
+2026/03/05 04:23:41 [Registry] 开始监听 yaml 变化...
+2026/03/05 04:23:41 [ConnPool] 热更新：新建连接池 addr=localhost:50052 min=24 max=130
+2026/03/05 04:23:41 [ConnPool] 热更新：新建连接池 addr=localhost:50053 min=24 max=130
+2026/03/05 04:23:41 [hub] watchRegistry 已启动（阻塞模式）
+2026/03/05 04:23:41 [hub] 连接池已热更新
+2026/03/05 04:23:41 [hub] 启动 gRPC 服务 :50051
+=== RUN   TestDispatch_Hello
+2026/03/05 04:23:41  send info (DispatchTarget):  [{localhost:50052 from:"hub"  service_name:"hello"  params:{key:"count"  value:"3"} true}]
+2026/03/05 04:23:41 [Hub] ✓ [hello] [1/3] {"message":"Hello","from":"hello","loop_idx":1,"total":3}
+2026/03/05 04:23:41 [Hub] ✓ [hello] [2/3] {"message":"Hello","from":"hello","loop_idx":2,"total":3}
+2026/03/05 04:23:41 [Hub] ✓ [hello] [3/3] {"message":"Hello","from":"hello","loop_idx":3,"total":3}
+--- PASS: TestDispatch_Hello (0.04s)
+PASS
+ok      github.com/sukasukasuka123/microHub/hub (cached)
+
+Running tool: G:\Tools\golang\bin\go.exe test -test.fullpath=true -timeout 30s -run ^TestDispatch_World$ github.com/sukasukasuka123/microHub/hub
+
+2026/03/05 04:24:19 [Registry] 注册表已更新 — tools=2 Hubs=1
+
+=== tools ===
+  [ ] [0] name=hello      addr=localhost:50052        method=Hello
+  [ ] [1] name=world      addr=localhost:50053        method=World
+=== pool.grpc_conn ===
+  min=24 max=130 idle_buf=0.55 survive=180s monitor=6s retries=3 retry_ms=200 reconnect=false
+2026/03/05 04:24:19 [Registry] 开始监听 yaml 变化...
+2026/03/05 04:24:19 [ConnPool] 热更新：新建连接池 addr=localhost:50052 min=24 max=130
+2026/03/05 04:24:19 [ConnPool] 热更新：新建连接池 addr=localhost:50053 min=24 max=130
+2026/03/05 04:24:19 [hub] watchRegistry 已启动（阻塞模式）
+2026/03/05 04:24:19 [hub] 连接池已热更新
+2026/03/05 04:24:19 [hub] 启动 gRPC 服务 :50051
+=== RUN   TestDispatch_World
+2026/03/05 04:24:19  send info (DispatchTarget):  [{localhost:50053 from:"hub"  service_name:"world"  params:{key:"count"  value:"3"} true}]
+2026/03/05 04:24:19 [Hub] ✓ [world] [1/3] {"message":"World","from":"world","loop_idx":1,"total":3}
+2026/03/05 04:24:19 [Hub] ✓ [world] [2/3] {"message":"World","from":"world","loop_idx":2,"total":3}
+2026/03/05 04:24:19 [Hub] ✓ [world] [3/3] {"message":"World","from":"world","loop_idx":3,"total":3}
+--- PASS: TestDispatch_World (0.05s)
+PASS
+ok      github.com/sukasukasuka123/microHub/hub (cached)
+
+Running tool: G:\Tools\golang\bin\go.exe test -test.fullpath=true -timeout 30s -run ^TestDispatch_UnknownService$ github.com/sukasukasuka123/microHub/hub
+
+2026/03/05 04:24:34 [Registry] 注册表已更新 — tools=2 Hubs=1
+
+=== tools ===
+  [ ] [0] name=hello      addr=localhost:50052        method=Hello
+  [ ] [1] name=world      addr=localhost:50053        method=World
+=== pool.grpc_conn ===
+  min=24 max=130 idle_buf=0.55 survive=180s monitor=6s retries=3 retry_ms=200 reconnect=false
+2026/03/05 04:24:35 [Registry] 开始监听 yaml 变化...
+2026/03/05 04:24:35 [ConnPool] 热更新：新建连接池 addr=localhost:50052 min=24 max=130
+2026/03/05 04:24:35 [ConnPool] 热更新：新建连接池 addr=localhost:50053 min=24 max=130
+2026/03/05 04:24:35 [hub] watchRegistry 已启动（阻塞模式）
+2026/03/05 04:24:35 [hub] 连接池已热更新
+2026/03/05 04:24:35 [hub] 启动 gRPC 服务 :50051
+=== RUN   TestDispatch_UnknownService
+2026/03/05 04:24:35 [Hub] tool=nonexistent_tool 未注册
+2026/03/05 04:24:35 [hub] Dispatch 无匹配目标 service=nonexistent_tool method=
+--- PASS: TestDispatch_UnknownService (0.00s)
+PASS
+ok      github.com/sukasukasuka123/microHub/hub (cached)
+
+imeout$ github.com/sukasukasuka123/microHub/hub
+
+2026/03/05 04:24:50 [Registry] 注册表已更新 — tools=2 Hubs=1
+
+=== tools ===
+  [ ] [0] name=hello      addr=localhost:50052        method=Hello
+  [ ] [1] name=world      addr=localhost:50053        method=World
+=== pool.grpc_conn ===
+  min=24 max=130 idle_buf=0.55 survive=180s monitor=6s retries=3 retry_ms=200 reconnect=false
+2026/03/05 04:24:50 [Registry] 开始监听 yaml 变化...
+2026/03/05 04:24:50 [ConnPool] 热更新：新建连接池 addr=localhost:50052 min=24 max=130
+2026/03/05 04:24:50 [ConnPool] 热更新：新建连接池 addr=localhost:50053 min=24 max=130
+2026/03/05 04:24:50 [hub] watchRegistry 已启动（阻塞模式）
+2026/03/05 04:24:50 [hub] 连接池已热更新
+2026/03/05 04:24:50 [hub] 启动 gRPC 服务 :50051
+=== RUN   TestDispatch_Timeout
+2026/03/05 04:24:51  send info (DispatchTarget):  [{localhost:50052 from:"hub"  service_name:"hello"  params:{key:"count"  value:"3"} true}]
+2026/03/05 04:24:51 [Hub] ✗ addr=localhost:50052 err=rpc error: code = DeadlineExceeded desc = context deadline exceeded
+    g:/Program/go/microHub/hub/hub_test.go:122: 超时测试 results=[{{localhost:50052 from:"hub"  service_name:"hello"  params:{key:"count"  value:"3"} true} [] rpc error: code = DeadlineExceeded desc = context deadline exceeded}]
+--- PASS: TestDispatch_Timeout (0.00s)
+PASS
+ok      github.com/sukasukasuka123/microHub/hub (cached)
+
+Running tool: G:\Tools\golang\bin\go.exe test -test.fullpath=true -timeout 30s -run ^TestDispatch_Concurrent$ github.com/sukasukasuka123/microHub/hub
+
+2026/03/05 04:25:33 [Registry] 注册表已更新 — tools=2 Hubs=1
+
+=== tools ===
+  [ ] [0] name=hello      addr=localhost:50052        method=Hello
+  [ ] [1] name=world      addr=localhost:50053        method=World
+=== pool.grpc_conn ===
+  min=24 max=130 idle_buf=0.55 survive=180s monitor=6s retries=3 retry_ms=200 reconnect=false
+2026/03/05 04:25:33 [Registry] 开始监听 yaml 变化...
+2026/03/05 04:25:33 [ConnPool] 热更新：新建连接池 addr=localhost:50052 min=24 max=130
+2026/03/05 04:25:33 [ConnPool] 热更新：新建连接池 addr=localhost:50053 min=24 max=130
+2026/03/05 04:25:33 [hub] watchRegistry 已启动（阻塞模式）
+2026/03/05 04:25:33 [hub] 连接池已热更新
+2026/03/05 04:25:33 [hub] 启动 gRPC 服务 :50051
+=== RUN   TestDispatch_Concurrent
+2026/03/05 04:25:33  send info (DispatchTarget):  [{localhost:50053 from:"hub"  service_name:"world"  params:{key:"count"  value:"3"} true}]
+2026/03/05 04:25:33 [Hub] ✓ [world] [1/3] {"message":"World","from":"world","loop_idx":1,"total":3}
+2026/03/05 04:25:33 [Hub] ✓ [world] [2/3] {"message":"World","from":"world","loop_idx":2,"total":3}
+2026/03/05 04:25:33 [Hub] ✓ [world] [3/3] {"message":"World","from":"world","loop_idx":3,"total":3}
+2026/03/05 04:25:33  send info (DispatchTarget):  [{localhost:50053 from:"hub"  service_name:"world"  params:{key:"count"  value:"3"} true}]
+2026/03/05 04:25:33 [Hub] ✓ [world] [1/3] {"message":"World","from":"world","loop_idx":1,"total":3}
+2026/03/05 04:25:33 [Hub] ✓ [world] [2/3] {"message":"World","from":"world","loop_idx":2,"total":3}
+2026/03/05 04:25:33 [Hub] ✓ [world] [3/3] {"message":"World","from":"world","loop_idx":3,"total":3}
+2026/03/05 04:25:33  send info (DispatchTarget):  [{localhost:50052 from:"hub"  service_name:"hello"  params:{key:"count"  value:"3"} true}]
+2026/03/05 04:25:33 [Hub] ✓ [hello] [1/3] {"message":"Hello","from":"hello","loop_idx":1,"total":3}
+2026/03/05 04:25:33 [Hub] ✓ [hello] [2/3] {"message":"Hello","from":"hello","loop_idx":2,"total":3}
+2026/03/05 04:25:33 [Hub] ✓ [hello] [3/3] {"message":"Hello","from":"hello","loop_idx":3,"total":3}
+2026/03/05 04:25:33  send info (DispatchTarget):  [{localhost:50053 from:"hub"  service_name:"world"  params:{key:"count"  value:"3"} true}]
+2026/03/05 04:25:33 [Hub] ✓ [world] [1/3] {"message":"World","from":"world","loop_idx":1,"total":3}
+2026/03/05 04:25:33 [Hub] ✓ [world] [2/3] {"message":"World","from":"world","loop_idx":2,"total":3}
+2026/03/05 04:25:33 [Hub] ✓ [world] [3/3] {"message":"World","from":"world","loop_idx":3,"total":3}
+2026/03/05 04:25:33  send info (DispatchTarget):  [{localhost:50052 from:"hub"  service_name:"hello"  params:{key:"count"  value:"3"} true}]
+2026/03/05 04:25:33 [Hub] ✓ [hello] [1/3] {"message":"Hello","from":"hello","loop_idx":1,"total":3}
+2026/03/05 04:25:33 [Hub] ✓ [hello] [2/3] {"message":"Hello","from":"hello","loop_idx":2,"total":3}
+2026/03/05 04:25:33 [Hub] ✓ [hello] [3/3] {"message":"Hello","from":"hello","loop_idx":3,"total":3}
+2026/03/05 04:25:33  send info (DispatchTarget):  [{localhost:50052 from:"hub"  service_name:"hello"  params:{key:"count"  value:"3"} true}]
+2026/03/05 04:25:33 [Hub] ✓ [hello] [1/3] {"message":"Hello","from":"hello","loop_idx":1,"total":3}
+2026/03/05 04:25:33 [Hub] ✓ [hello] [2/3] {"message":"Hello","from":"hello","loop_idx":2,"total":3}
+2026/03/05 04:25:33 [Hub] ✓ [hello] [3/3] {"message":"Hello","from":"hello","loop_idx":3,"total":3}
+2026/03/05 04:25:33  send info (DispatchTarget):  [{localhost:50053 from:"hub"  service_name:"world"  params:{key:"count"  value:"3"} true}]
+2026/03/05 04:25:33 [Hub] ✓ [world] [1/3] {"message":"World","from":"world","loop_idx":1,"total":3}
+2026/03/05 04:25:33 [Hub] ✓ [world] [2/3] {"message":"World","from":"world","loop_idx":2,"total":3}
+2026/03/05 04:25:33 [Hub] ✓ [world] [3/3] {"message":"World","from":"world","loop_idx":3,"total":3}
+2026/03/05 04:25:33  send info (DispatchTarget):  [{localhost:50052 from:"hub"  service_name:"hello"  params:{key:"count"  value:"3"} true}]
+2026/03/05 04:25:33 [Hub] ✓ [hello] [1/3] {"message":"Hello","from":"hello","loop_idx":1,"total":3}
+2026/03/05 04:25:33 [Hub] ✓ [hello] [2/3] {"message":"Hello","from":"hello","loop_idx":2,"total":3}
+2026/03/05 04:25:33 [Hub] ✓ [hello] [3/3] {"message":"Hello","from":"hello","loop_idx":3,"total":3}
+2026/03/05 04:25:33  send info (DispatchTarget):  [{localhost:50052 from:"hub"  service_name:"hello"  params:{key:"count"  value:"3"} true}]
+2026/03/05 04:25:33 [Hub] ✓ [hello] [1/3] {"message":"Hello","from":"hello","loop_idx":1,"total":3}
+2026/03/05 04:25:33 [Hub] ✓ [hello] [2/3] {"message":"Hello","from":"hello","loop_idx":2,"total":3}
+2026/03/05 04:25:33 [Hub] ✓ [hello] [3/3] {"message":"Hello","from":"hello","loop_idx":3,"total":3}
+2026/03/05 04:25:33  send info (DispatchTarget):  [{localhost:50052 from:"hub"  service_name:"hello"  params:{key:"count"  value:"3"} true}]
+2026/03/05 04:25:33  send info (DispatchTarget):  [{localhost:50053 from:"hub"  service_name:"world"  params:{key:"count"  value:"3"} true}]
+2026/03/05 04:25:33 [Hub] ✓ [world] [1/3] {"message":"World","from":"world","loop_idx":1,"total":3}
+2026/03/05 04:25:33 [Hub] ✓ [world] [2/3] {"message":"World","from":"world","loop_idx":2,"total":3}
+2026/03/05 04:25:33 [Hub] ✓ [world] [3/3] {"message":"World","from":"world","loop_idx":3,"total":3}
+2026/03/05 04:25:33 [Hub] ✓ [hello] [1/3] {"message":"Hello","from":"hello","loop_idx":1,"total":3}
+2026/03/05 04:25:33 [Hub] ✓ [hello] [2/3] {"message":"Hello","from":"hello","loop_idx":2,"total":3}
+2026/03/05 04:25:33 [Hub] ✓ [hello] [3/3] {"message":"Hello","from":"hello","loop_idx":3,"total":3}
+2026/03/05 04:25:33  send info (DispatchTarget):  [{localhost:50052 from:"hub"  service_name:"hello"  params:{key:"count"  value:"3"} true}]
+2026/03/05 04:25:33 [Hub] ✓ [hello] [1/3] {"message":"Hello","from":"hello","loop_idx":1,"total":3}
+2026/03/05 04:25:33 [Hub] ✓ [hello] [2/3] {"message":"Hello","from":"hello","loop_idx":2,"total":3}
+2026/03/05 04:25:33 [Hub] ✓ [hello] [3/3] {"message":"Hello","from":"hello","loop_idx":3,"total":3}
+2026/03/05 04:25:33  send info (DispatchTarget):  [{localhost:50053 from:"hub"  service_name:"world"  params:{key:"count"  value:"3"} true}]
+2026/03/05 04:25:33 [Hub] ✓ [world] [1/3] {"message":"World","from":"world","loop_idx":1,"total":3}
+2026/03/05 04:25:33 [Hub] ✓ [world] [2/3] {"message":"World","from":"world","loop_idx":2,"total":3}
+2026/03/05 04:25:33 [Hub] ✓ [world] [3/3] {"message":"World","from":"world","loop_idx":3,"total":3}
+2026/03/05 04:25:33  send info (DispatchTarget):  [{localhost:50052 from:"hub"  service_name:"hello"  params:{key:"count"  value:"3"} true}]
+2026/03/05 04:25:33 [Hub] ✓ [hello] [1/3] {"message":"Hello","from":"hello","loop_idx":1,"total":3}
+2026/03/05 04:25:33 [Hub] ✓ [hello] [2/3] {"message":"Hello","from":"hello","loop_idx":2,"total":3}
+2026/03/05 04:25:33 [Hub] ✓ [hello] [3/3] {"message":"Hello","from":"hello","loop_idx":3,"total":3}
+2026/03/05 04:25:33  send info (DispatchTarget):  [{localhost:50053 from:"hub"  service_name:"world"  params:{key:"count"  value:"3"} true}]
+2026/03/05 04:25:33 [Hub] ✓ [world] [1/3] {"message":"World","from":"world","loop_idx":1,"total":3}
+2026/03/05 04:25:33 [Hub] ✓ [world] [2/3] {"message":"World","from":"world","loop_idx":2,"total":3}
+2026/03/05 04:25:33 [Hub] ✓ [world] [3/3] {"message":"World","from":"world","loop_idx":3,"total":3}
+2026/03/05 04:25:33  send info (DispatchTarget):  [{localhost:50052 from:"hub"  service_name:"hello"  params:{key:"count"  value:"3"} true}]
+2026/03/05 04:25:33 [Hub] ✓ [hello] [1/3] {"message":"Hello","from":"hello","loop_idx":1,"total":3}
+2026/03/05 04:25:33 [Hub] ✓ [hello] [2/3] {"message":"Hello","from":"hello","loop_idx":2,"total":3}
+2026/03/05 04:25:33 [Hub] ✓ [hello] [3/3] {"message":"Hello","from":"hello","loop_idx":3,"total":3}
+2026/03/05 04:25:33  send info (DispatchTarget):  [{localhost:50052 from:"hub"  service_name:"hello"  params:{key:"count"  value:"3"} true}]
+2026/03/05 04:25:33 [Hub] ✓ [hello] [1/3] {"message":"Hello","from":"hello","loop_idx":1,"total":3}
+2026/03/05 04:25:33 [Hub] ✓ [hello] [2/3] {"message":"Hello","from":"hello","loop_idx":2,"total":3}
+2026/03/05 04:25:33 [Hub] ✓ [hello] [3/3] {"message":"Hello","from":"hello","loop_idx":3,"total":3}
+2026/03/05 04:25:33  send info (DispatchTarget):  [{localhost:50053 from:"hub"  service_name:"world"  params:{key:"count"  value:"3"} true}]
+2026/03/05 04:25:33 [Hub] ✓ [world] [1/3] {"message":"World","from":"world","loop_idx":1,"total":3}
+2026/03/05 04:25:33 [Hub] ✓ [world] [2/3] {"message":"World","from":"world","loop_idx":2,"total":3}
+2026/03/05 04:25:33 [Hub] ✓ [world] [3/3] {"message":"World","from":"world","loop_idx":3,"total":3}
+2026/03/05 04:25:33  send info (DispatchTarget):  [{localhost:50053 from:"hub"  service_name:"world"  params:{key:"count"  value:"3"} true}]
+2026/03/05 04:25:33 [Hub] ✓ [world] [1/3] {"message":"World","from":"world","loop_idx":1,"total":3}
+2026/03/05 04:25:33 [Hub] ✓ [world] [2/3] {"message":"World","from":"world","loop_idx":2,"total":3}
+2026/03/05 04:25:33 [Hub] ✓ [world] [3/3] {"message":"World","from":"world","loop_idx":3,"total":3}
+2026/03/05 04:25:33  send info (DispatchTarget):  [{localhost:50053 from:"hub"  service_name:"world"  params:{key:"count"  value:"3"} true}]
+2026/03/05 04:25:33 [Hub] ✓ [world] [1/3] {"message":"World","from":"world","loop_idx":1,"total":3}
+2026/03/05 04:25:33 [Hub] ✓ [world] [2/3] {"message":"World","from":"world","loop_idx":2,"total":3}
+2026/03/05 04:25:33 [Hub] ✓ [world] [3/3] {"message":"World","from":"world","loop_idx":3,"total":3}
+--- PASS: TestDispatch_Concurrent (0.09s)
+PASS
+ok      github.com/sukasukasuka123/microHub/hub (cached)

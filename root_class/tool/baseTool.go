@@ -1,7 +1,9 @@
+// root_class/tool/basetool.go
 package tool
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -12,13 +14,12 @@ import (
 	pb "github.com/sukasukasuka123/microHub/proto/gen/proto"
 )
 
-// ── ToolHandler：子类实现的接口 ───────────────────────────
+// ── ToolHandler：最小必要接口 ─────────────────────────────
 
 type ToolHandler interface {
-	// ServiceName 与 registry.yaml 的 name 字段一致，用于身份校验和日志
 	ServiceName() string
-	// Execute 接收请求，返回响应列表；业务逻辑完全由子类决定
 	Execute(req *pb.ToolRequest) ([]*pb.ToolResponse, error)
+	// ✅ 移除 GetSchema：schema 用于文档/配置，校验由业务方在 Execute 中完成
 }
 
 // ── BaseTool ──────────────────────────────────────────────
@@ -34,29 +35,36 @@ func New(handler ToolHandler) *BaseTool {
 
 // ── gRPC 方法实现 ─────────────────────────────────────────
 
-// baseTool.go
 func (b *BaseTool) DispatchSimple(_ context.Context, req *pb.ToolRequest) (*pb.ToolResponse, error) {
-	log.Printf("[%s] DispatchSimple from=%s method=%s params=%v",
-		b.handler.ServiceName(), req.From, req.Method, req.Params)
+	// ✅ 精简日志：只打印必要信息
+	log.Printf("[%s] DispatchSimple from=%s method=%s params_len=%d",
+		b.handler.ServiceName(), req.From, req.Method, len(req.Params))
 
 	if err := b.validateTarget(req); err != nil {
-		return errorResp(b.handler.ServiceName(), err.Error()), nil
+		return b.errorResp("TARGET_VALIDATE", err.Error(), "service_name"), nil
 	}
 
+	// ✅ 业务执行：参数校验 + 业务逻辑完全由 handler.Execute 决定
 	resps, err := b.handler.Execute(req)
 	if err != nil {
-		return errorResp(b.handler.ServiceName(), err.Error()), nil
+		// ✅ 业务错误：直接包装返回，不重复校验
+		return b.errorResp("EXECUTE_FAILED", err.Error(), ""), nil
 	}
 
-	// ── 修改点：Simple 语义 = 单响应，多条只取第一条并告警 ──
+	// ── Simple 语义 = 单响应 ──
 	if len(resps) == 0 {
-		return errorResp(b.handler.ServiceName(), "execute returned no response"), nil
+		return b.errorResp("EMPTY_RESPONSE", "Execute returned no response", ""), nil
 	}
 	if len(resps) > 1 {
 		log.Printf("[%s] DispatchSimple: Execute 返回 %d 条响应，仅取第一条；多响应请用 DispatchStream",
 			b.handler.ServiceName(), len(resps))
 	}
-	return resps[0], nil
+
+	first := resps[0]
+	if first.Status == "" {
+		first.Status = "ok"
+	}
+	return first, nil
 }
 
 func (b *BaseTool) DispatchStream(stream pb.HubService_DispatchStreamServer) error {
@@ -68,25 +76,25 @@ func (b *BaseTool) DispatchStream(stream pb.HubService_DispatchStreamServer) err
 		if err != nil {
 			return err
 		}
-		log.Printf("[%s] DispatchStream from=%s method=%s params=%v",
-			b.handler.ServiceName(), req.From, req.Method, req.Params)
+
+		log.Printf("[%s] DispatchStream from=%s method=%s params_len=%d",
+			b.handler.ServiceName(), req.From, req.Method, len(req.Params))
 
 		if err := b.validateTarget(req); err != nil {
-			if sendErr := stream.Send(errorResp(b.handler.ServiceName(), err.Error())); sendErr != nil {
-				return sendErr
-			}
+			_ = stream.Send(b.errorResp("TARGET_VALIDATE", err.Error(), "service_name"))
 			continue
 		}
 
 		resps, err := b.handler.Execute(req)
 		if err != nil {
-			if sendErr := stream.Send(errorResp(b.handler.ServiceName(), err.Error())); sendErr != nil {
-				return sendErr
-			}
+			_ = stream.Send(b.errorResp("EXECUTE_FAILED", err.Error(), ""))
 			continue
 		}
 
 		for _, resp := range resps {
+			if resp.Status == "" {
+				resp.Status = "ok"
+			}
 			if err := stream.Send(resp); err != nil {
 				return err
 			}
@@ -94,7 +102,7 @@ func (b *BaseTool) DispatchStream(stream pb.HubService_DispatchStreamServer) err
 	}
 }
 
-// ── Serve：构造实例并启动 gRPC 监听 ──────────────────────
+// ── Serve ─────────────────────────────────────────────────
 
 func (b *BaseTool) Serve(addr string) error {
 	lis, err := net.Listen("tcp", addr)
@@ -109,8 +117,6 @@ func (b *BaseTool) Serve(addr string) error {
 
 // ── 内部辅助 ──────────────────────────────────────────────
 
-// validateTarget 校验 service_name 是否与自身匹配
-// service_name 为空时跳过（兼容广播场景）
 func (b *BaseTool) validateTarget(req *pb.ToolRequest) error {
 	if req.ServiceName != "" && req.ServiceName != b.handler.ServiceName() {
 		return fmt.Errorf("service_name mismatch: got=%s want=%s",
@@ -119,10 +125,54 @@ func (b *BaseTool) validateTarget(req *pb.ToolRequest) error {
 	return nil
 }
 
-func errorResp(serviceName, msg string) *pb.ToolResponse {
+func (b *BaseTool) errorResp(code, msg, field string) *pb.ToolResponse {
+	return &pb.ToolResponse{
+		ServiceName: b.handler.ServiceName(),
+		Status:      "error",
+		Result:      []byte("{}"), // 错误时返回空对象，保持 JSON 兼容性
+		Errors: []*pb.ErrorDetail{
+			{
+				Code:    code,
+				Message: msg,
+				Field:   field,
+			},
+		},
+	}
+}
+
+// ── 业务方辅助函数（保持不变）──────────────────────────────
+
+// NewOKResp 构造成功响应，自动序列化 data 为 JSON bytes
+func NewOKResp(serviceName string, data interface{}) (*pb.ToolResponse, error) {
+	resultBytes, err := json.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("marshal result: %w", err)
+	}
 	return &pb.ToolResponse{
 		ServiceName: serviceName,
-		Status:      "error",
-		Result:      msg,
+		Status:      "ok",
+		Result:      resultBytes,
+		Errors:      nil,
+	}, nil
+}
+
+// NewErrorDetail 快速构造单个错误详情
+func NewErrorDetail(code, message, field, help string) *pb.ErrorDetail {
+	return &pb.ErrorDetail{
+		Code:    code,
+		Message: message,
+		Field:   field,
+		Help:    help,
+	}
+}
+
+// MergeErrors 合并多个错误详情到响应中
+func MergeErrors(resp *pb.ToolResponse, errors ...*pb.ErrorDetail) {
+	if resp.Errors == nil {
+		resp.Errors = make([]*pb.ErrorDetail, 0, len(errors))
+	}
+	resp.Errors = append(resp.Errors, errors...)
+	if resp.Status == "ok" && len(resp.Errors) > 0 {
+		resp.Status = "error"
 	}
 }

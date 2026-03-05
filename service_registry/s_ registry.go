@@ -1,6 +1,7 @@
 package service_registry
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"sync"
@@ -8,14 +9,49 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/spf13/viper"
+	schema "github.com/sukasukasuka123/microHub/jsonSchema"
 )
 
-// ── 服务元数据 ────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════
+//  服务元数据（✅ 移除 sync.Once，避免 copylocks）
+// ════════════════════════════════════════════════════════════
 
 type ToolEntry struct {
-	Name   string `yaml:"name"   mapstructure:"name"`
-	Addr   string `yaml:"addr"   mapstructure:"addr"`
-	Method string `yaml:"method" mapstructure:"method"`
+	Name         string `yaml:"name"           mapstructure:"name"`
+	Addr         string `yaml:"addr"           mapstructure:"addr"`
+	Method       string `yaml:"method"         mapstructure:"method"`
+	InputSchema  string `yaml:"input_schema"   mapstructure:"input_schema"`
+	OutputSchema string `yaml:"output_schema"  mapstructure:"output_schema"`
+	// ✅ 移除 parseOnce / inputSchemaParsed / outputSchemaParsed
+	// Demo 场景：每次解析开销可接受，避免锁拷贝问题
+}
+
+// ParseInputSchema 解析 input_schema（无缓存，简单可靠）
+func (t *ToolEntry) ParseInputSchema() (*schema.SchemaNode, error) {
+	if t.InputSchema == "" {
+		return nil, nil
+	}
+	return parseSchema([]byte(t.InputSchema))
+}
+
+// ParseOutputSchema 解析 output_schema（无缓存）
+func (t *ToolEntry) ParseOutputSchema() (*schema.SchemaNode, error) {
+	if t.OutputSchema == "" {
+		return nil, nil
+	}
+	return parseSchema([]byte(t.OutputSchema))
+}
+
+// parseSchema 通用解析函数
+func parseSchema(raw []byte) (*schema.SchemaNode, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var node schema.SchemaNode
+	if err := json.Unmarshal(raw, &node); err != nil {
+		return nil, fmt.Errorf("parse schema: %w", err)
+	}
+	return &node, nil
 }
 
 type HubEntry struct {
@@ -24,7 +60,9 @@ type HubEntry struct {
 	RegisteredAt string `yaml:"registered_at" mapstructure:"registered_at"`
 }
 
-// ── 连接池配置（从 yaml pool.grpc_conn 节读取） ───────────
+// ════════════════════════════════════════════════════════════
+//  连接池配置
+// ════════════════════════════════════════════════════════════
 
 type GrpcPoolConfig struct {
 	MinSize            int64   `mapstructure:"min_size"`
@@ -37,8 +75,6 @@ type GrpcPoolConfig struct {
 	ReconnectOnGet     bool    `mapstructure:"reconnect_on_get"`
 }
 
-// SurviveTime / MonitorInterval / RetryInterval 转换为 time.Duration，
-// 方便直接传入 PoolConfig。
 func (c GrpcPoolConfig) SurviveTime() time.Duration {
 	return time.Duration(c.SurviveTimeSec) * time.Second
 }
@@ -49,7 +85,9 @@ func (c GrpcPoolConfig) RetryInterval() time.Duration {
 	return time.Duration(c.RetryIntervalMs) * time.Millisecond
 }
 
-// ── yaml 整体映射 ─────────────────────────────────────────
+// ════════════════════════════════════════════════════════════
+//  YAML 整体映射
+// ════════════════════════════════════════════════════════════
 
 type registryConfig struct {
 	Services struct {
@@ -61,7 +99,9 @@ type registryConfig struct {
 	} `mapstructure:"pool"`
 }
 
-// ── 注册表状态 ────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════
+//  注册表状态（✅ ToolEntry 现在是纯数据，可安全拷贝）
+// ════════════════════════════════════════════════════════════
 
 var (
 	mu       sync.RWMutex
@@ -71,31 +111,31 @@ var (
 
 	passedMu    sync.RWMutex
 	passedTools = make(map[string]bool)
-	// ── 新增：配置变更通知 channel ──
-	changeCh = make(chan struct{}, 1)
+	changeCh    = make(chan struct{}, 1)
 )
 
-// ChangeCh 返回只读的配置变更通知 channel，供 Hub 等外部组件阻塞监听。
 func ChangeCh() <-chan struct{} {
 	return changeCh
 }
 
-// ── Tool API ──────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════
+//  Tool API（✅ 现在可安全按值返回）
+// ════════════════════════════════════════════════════════════
 
 func GetAllTools() []ToolEntry {
 	mu.RLock()
 	defer mu.RUnlock()
 	cp := make([]ToolEntry, len(tools))
-	copy(cp, tools)
+	copy(cp, tools) // ✅ 纯数据拷贝，安全
 	return cp
 }
 
 func SelectToolByName(name string) (ToolEntry, bool) {
 	mu.RLock()
 	defer mu.RUnlock()
-	for _, t := range tools {
+	for _, t := range tools { // ✅ 纯数据，range 拷贝安全
 		if t.Name == name {
-			return t, true
+			return t, true // ✅ 按值返回，安全
 		}
 	}
 	return ToolEntry{}, false
@@ -112,7 +152,41 @@ func SelectToolByMethod(method string) (ToolEntry, bool) {
 	return ToolEntry{}, false
 }
 
-// ── Hub API ───────────────────────────────────────────────
+func GetToolSchema(name string) (input, output string, exists bool) {
+	mu.RLock()
+	defer mu.RUnlock()
+	for _, t := range tools {
+		if t.Name == name {
+			return t.InputSchema, t.OutputSchema, true
+		}
+	}
+	return "", "", false
+}
+
+func GetToolSchemaParsed(name string) (input, output *schema.SchemaNode, exists bool) {
+	mu.RLock()
+	defer mu.RUnlock()
+	for _, t := range tools {
+		if t.Name == name {
+			in, _ := t.ParseInputSchema() // ✅ 无缓存，每次解析
+			out, _ := t.ParseOutputSchema()
+			return in, out, true
+		}
+	}
+	return nil, nil, false
+}
+
+func ValidateToolInput(toolName string, params json.RawMessage) error {
+	in, _, exists := GetToolSchemaParsed(toolName)
+	if !exists || in == nil {
+		return nil
+	}
+	return in.Validate(params)
+}
+
+// ════════════════════════════════════════════════════════════
+//  Hub API
+// ════════════════════════════════════════════════════════════
 
 func GetAllHubs() []HubEntry {
 	mu.RLock()
@@ -122,17 +196,19 @@ func GetAllHubs() []HubEntry {
 	return cp
 }
 
-// ── 连接池配置 API ────────────────────────────────────────
+// ════════════════════════════════════════════════════════════
+//  连接池配置 API
+// ════════════════════════════════════════════════════════════
 
-// GetGrpcPoolConfig 返回当前 gRPC 连接池配置快照。
-// BaseHub 在创建新连接池时调用，热更新后新建的池会使用新配置。
 func GetGrpcPoolConfig() GrpcPoolConfig {
 	mu.RLock()
 	defer mu.RUnlock()
 	return grpcPool
 }
 
-// ── 测试通过状态 API ──────────────────────────────────────
+// ════════════════════════════════════════════════════════════
+//  测试状态 API
+// ════════════════════════════════════════════════════════════
 
 func MarkPassed(toolName string) {
 	passedMu.Lock()
@@ -160,7 +236,7 @@ func GetPassedTools() []ToolEntry {
 	passedMu.RLock()
 	defer passedMu.RUnlock()
 	var result []ToolEntry
-	for _, t := range tools {
+	for _, t := range tools { // ✅ 纯数据，append 安全
 		if passedTools[t.Name] {
 			result = append(result, t)
 		}
@@ -168,7 +244,9 @@ func GetPassedTools() []ToolEntry {
 	return result
 }
 
-// ── 打印 ──────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════
+//  打印
+// ════════════════════════════════════════════════════════════
 
 func PrintRegistry() {
 	mu.RLock()
@@ -177,14 +255,24 @@ func PrintRegistry() {
 	defer passedMu.RUnlock()
 
 	fmt.Println("\n=== tools ===")
-	for i, t := range tools {
+	for i, t := range tools { // ✅ 纯数据，range 安全
 		mark := "[ ]"
 		if passedTools[t.Name] {
 			mark = "[✓]"
 		}
-		fmt.Printf("  %s [%d] name=%-10s addr=%-22s method=%s\n",
+		in, _ := t.ParseInputSchema()
+		out, _ := t.ParseOutputSchema()
+		fmt.Printf("  %s [%d] name=%-10s addr=%-22s method=%-10s",
 			mark, i, t.Name, t.Addr, t.Method)
+		if in != nil {
+			fmt.Printf(" in_type=%s", in.Type)
+		}
+		if out != nil {
+			fmt.Printf(" out_type=%s", out.Type)
+		}
+		fmt.Println()
 	}
+
 	fmt.Println("=== pool.grpc_conn ===")
 	fmt.Printf("  min=%d max=%d idle_buf=%.2f survive=%ds monitor=%ds retries=%d retry_ms=%d reconnect=%v\n",
 		grpcPool.MinSize, grpcPool.MaxSize, grpcPool.IdleBufferFactor,
@@ -193,11 +281,14 @@ func PrintRegistry() {
 	)
 }
 
-// ── 内部 ──────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════
+//  内部函数
+// ════════════════════════════════════════════════════════════
 
 func replaceAll(cfg registryConfig) {
 	mu.Lock()
 	defer mu.Unlock()
+	// ✅ 纯数据赋值，无需重置缓存
 	tools = cfg.Services.Tools
 	Hubs = cfg.Services.Hubs
 	grpcPool = cfg.Pool.GrpcConn
@@ -219,7 +310,6 @@ func onConfigUpdated(cfg registryConfig) {
 		len(cfg.Services.Tools), len(cfg.Services.Hubs))
 	PrintRegistry()
 
-	// ── 新增：非阻塞投递变更信号（buffer=1，防止积压） ──
 	select {
 	case changeCh <- struct{}{}:
 	default:

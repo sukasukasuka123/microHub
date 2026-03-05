@@ -21,13 +21,13 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// Hub 向 Tool 派发的任务请求
 type ToolRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	From          string                 `protobuf:"bytes,1,opt,name=from,proto3" json:"from,omitempty"`                                  // 发送方标识，如 "hub"
-	ServiceName   string                 `protobuf:"bytes,2,opt,name=service_name,json=serviceName,proto3" json:"service_name,omitempty"` // 目标服务 name，对照 registry 的 name 字段
-	Method        string                 `protobuf:"bytes,3,opt,name=method,proto3" json:"method,omitempty"`                              // 调用的方法
-	Params        map[string]string      `protobuf:"bytes,4,rep,name=params,proto3" json:"params,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	From        string                 `protobuf:"bytes,1,opt,name=from,proto3" json:"from,omitempty"`
+	ServiceName string                 `protobuf:"bytes,2,opt,name=service_name,json=serviceName,proto3" json:"service_name,omitempty"`
+	Method      string                 `protobuf:"bytes,3,opt,name=method,proto3" json:"method,omitempty"`
+	// 新字段：JSON 序列化的入参（bytes）
+	Params        []byte `protobuf:"bytes,4,opt,name=params,proto3" json:"params,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -83,19 +83,19 @@ func (x *ToolRequest) GetMethod() string {
 	return ""
 }
 
-func (x *ToolRequest) GetParams() map[string]string {
+func (x *ToolRequest) GetParams() []byte {
 	if x != nil {
 		return x.Params
 	}
 	return nil
 }
 
-// Tool 返回给 Hub 的执行结果
 type ToolResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ServiceName   string                 `protobuf:"bytes,1,opt,name=service_name,json=serviceName,proto3" json:"service_name,omitempty"`
-	Status        string                 `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
-	Result        string                 `protobuf:"bytes,3,opt,name=result,proto3" json:"result,omitempty"`
+	Status        string                 `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"` // "ok", "error", "partial"
+	Result        []byte                 `protobuf:"bytes,3,opt,name=result,proto3" json:"result,omitempty"`
+	Errors        []*ErrorDetail         `protobuf:"bytes,4,rep,name=errors,proto3" json:"errors,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -144,9 +144,84 @@ func (x *ToolResponse) GetStatus() string {
 	return ""
 }
 
-func (x *ToolResponse) GetResult() string {
+func (x *ToolResponse) GetResult() []byte {
 	if x != nil {
 		return x.Result
+	}
+	return nil
+}
+
+func (x *ToolResponse) GetErrors() []*ErrorDetail {
+	if x != nil {
+		return x.Errors
+	}
+	return nil
+}
+
+type ErrorDetail struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Code          string                 `protobuf:"bytes,1,opt,name=code,proto3" json:"code,omitempty"` // e.g. "INVALID_PARAM", "API_ERROR"
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	Field         string                 `protobuf:"bytes,3,opt,name=field,proto3" json:"field,omitempty"` // e.g. "city"
+	Help          string                 `protobuf:"bytes,4,opt,name=help,proto3" json:"help,omitempty"`   // 可选提示
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ErrorDetail) Reset() {
+	*x = ErrorDetail{}
+	mi := &file_proto_service_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ErrorDetail) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ErrorDetail) ProtoMessage() {}
+
+func (x *ErrorDetail) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_service_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ErrorDetail.ProtoReflect.Descriptor instead.
+func (*ErrorDetail) Descriptor() ([]byte, []int) {
+	return file_proto_service_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *ErrorDetail) GetCode() string {
+	if x != nil {
+		return x.Code
+	}
+	return ""
+}
+
+func (x *ErrorDetail) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+func (x *ErrorDetail) GetField() string {
+	if x != nil {
+		return x.Field
+	}
+	return ""
+}
+
+func (x *ErrorDetail) GetHelp() string {
+	if x != nil {
+		return x.Help
 	}
 	return ""
 }
@@ -162,7 +237,7 @@ type ToolEntry struct {
 
 func (x *ToolEntry) Reset() {
 	*x = ToolEntry{}
-	mi := &file_proto_service_proto_msgTypes[2]
+	mi := &file_proto_service_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -174,7 +249,7 @@ func (x *ToolEntry) String() string {
 func (*ToolEntry) ProtoMessage() {}
 
 func (x *ToolEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_service_proto_msgTypes[2]
+	mi := &file_proto_service_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -187,7 +262,7 @@ func (x *ToolEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ToolEntry.ProtoReflect.Descriptor instead.
 func (*ToolEntry) Descriptor() ([]byte, []int) {
-	return file_proto_service_proto_rawDescGZIP(), []int{2}
+	return file_proto_service_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *ToolEntry) GetAddr() string {
@@ -208,19 +283,22 @@ var File_proto_service_proto protoreflect.FileDescriptor
 
 const file_proto_service_proto_rawDesc = "" +
 	"\n" +
-	"\x13proto/service.proto\x12\x11micro_service_mvp\"\xdb\x01\n" +
+	"\x13proto/service.proto\x12\x11micro_service_mvp\"t\n" +
 	"\vToolRequest\x12\x12\n" +
 	"\x04from\x18\x01 \x01(\tR\x04from\x12!\n" +
 	"\fservice_name\x18\x02 \x01(\tR\vserviceName\x12\x16\n" +
-	"\x06method\x18\x03 \x01(\tR\x06method\x12B\n" +
-	"\x06params\x18\x04 \x03(\v2*.micro_service_mvp.ToolRequest.ParamsEntryR\x06params\x1a9\n" +
-	"\vParamsEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"a\n" +
+	"\x06method\x18\x03 \x01(\tR\x06method\x12\x16\n" +
+	"\x06params\x18\x04 \x01(\fR\x06params\"\x99\x01\n" +
 	"\fToolResponse\x12!\n" +
 	"\fservice_name\x18\x01 \x01(\tR\vserviceName\x12\x16\n" +
 	"\x06status\x18\x02 \x01(\tR\x06status\x12\x16\n" +
-	"\x06result\x18\x03 \x01(\tR\x06result\"7\n" +
+	"\x06result\x18\x03 \x01(\fR\x06result\x126\n" +
+	"\x06errors\x18\x04 \x03(\v2\x1e.micro_service_mvp.ErrorDetailR\x06errors\"e\n" +
+	"\vErrorDetail\x12\x12\n" +
+	"\x04code\x18\x01 \x01(\tR\x04code\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\x12\x14\n" +
+	"\x05field\x18\x03 \x01(\tR\x05field\x12\x12\n" +
+	"\x04help\x18\x04 \x01(\tR\x04help\"7\n" +
 	"\tToolEntry\x12\x12\n" +
 	"\x04addr\x18\x01 \x01(\tR\x04addr\x12\x16\n" +
 	"\x06method\x18\x02 \x01(\tR\x06method2\xb6\x01\n" +
@@ -245,11 +323,11 @@ var file_proto_service_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_proto_service_proto_goTypes = []any{
 	(*ToolRequest)(nil),  // 0: micro_service_mvp.ToolRequest
 	(*ToolResponse)(nil), // 1: micro_service_mvp.ToolResponse
-	(*ToolEntry)(nil),    // 2: micro_service_mvp.ToolEntry
-	nil,                  // 3: micro_service_mvp.ToolRequest.ParamsEntry
+	(*ErrorDetail)(nil),  // 2: micro_service_mvp.ErrorDetail
+	(*ToolEntry)(nil),    // 3: micro_service_mvp.ToolEntry
 }
 var file_proto_service_proto_depIdxs = []int32{
-	3, // 0: micro_service_mvp.ToolRequest.params:type_name -> micro_service_mvp.ToolRequest.ParamsEntry
+	2, // 0: micro_service_mvp.ToolResponse.errors:type_name -> micro_service_mvp.ErrorDetail
 	0, // 1: micro_service_mvp.HubService.DispatchStream:input_type -> micro_service_mvp.ToolRequest
 	0, // 2: micro_service_mvp.HubService.DispatchSimple:input_type -> micro_service_mvp.ToolRequest
 	1, // 3: micro_service_mvp.HubService.DispatchStream:output_type -> micro_service_mvp.ToolResponse

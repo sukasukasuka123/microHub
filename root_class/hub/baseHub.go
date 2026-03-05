@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -180,20 +181,6 @@ func Serve(addr string, handler HubHandler, loopInterval time.Duration) error {
 	return b.serve(addr, loopInterval)
 }
 
-// ServeAsync 在当前 BaseHub 实例上启动 gRPC 监听，供外部在 goroutine 里调用。
-//
-// 与包级 Serve 的区别：
-//   - Serve    内部重新 New 一个 BaseHub，连接池与调用方的 hub 实例无关
-//   - ServeAsync 复用当前实例的连接池，Dispatch 和 gRPC 入站共享同一套连接
-//
-// 典型用法：
-//
-//	hub := hubbase.New(handler)
-//	go func() {
-//	    if err := hub.ServeAsync(":50051", 0); err != nil {
-//	        log.Fatalf("serve: %v", err)
-//	    }
-//	}()
 func (b *BaseHub) ServeAsync(addr string, loopInterval time.Duration) error {
 	return b.serve(addr, loopInterval)
 }
@@ -243,26 +230,71 @@ func (b *BaseHub) DispatchSimple(ctx context.Context, req *pb.ToolRequest) (*pb.
 
 	targets, err := b.handler.Execute(req)
 	if err != nil {
-		return errorResp(b.handler.ServiceName(), err.Error()), nil
+		// ✅ 使用结构化错误返回
+		return errorResp(b.handler.ServiceName(), "EXECUTE_FAILED", err.Error(), ""), nil
 	}
 
 	results := b.sendAll(ctx, targets)
 	b.handler.OnResults(results)
 
-	result := ""
+	// ✅ 聚合结果：收集业务数据 + 结构化错误
+	var allErrors []*pb.ErrorDetail
+	var aggregatedResults [][]byte
+
 	for _, r := range results {
 		if r.Err != nil {
-			result += fmt.Sprintf("[%s] error: %v\n", r.Target.Addr, r.Err)
+			// 派发层错误（如连接失败）
+			allErrors = append(allErrors, &pb.ErrorDetail{
+				Code:    "DISPATCH_ERROR",
+				Message: fmt.Sprintf("[%s] %v", r.Target.Addr, r.Err),
+				Field:   "target.addr",
+				Help:    "检查下游服务是否可用",
+			})
 			continue
 		}
 		for _, resp := range r.Responses {
-			result += resp.Result + "\n"
+			// 收集业务层返回的结构化错误
+			allErrors = append(allErrors, resp.Errors...)
+			// 收集有效业务数据（跳过空结果）
+			if len(resp.Result) > 0 {
+				aggregatedResults = append(aggregatedResults, resp.Result)
+			}
 		}
 	}
+
+	// ✅ 确定最终状态
+	status := "ok"
+	if len(allErrors) > 0 {
+		if len(aggregatedResults) > 0 {
+			status = "partial" // 部分成功
+		} else {
+			status = "error" // 全部失败
+		}
+	}
+
+	// ✅ 聚合业务数据：单结果直接返回，多结果包裹为 JSON 数组
+	var finalResult []byte
+	switch len(aggregatedResults) {
+	case 0:
+		finalResult = []byte("{}") // 空结果返回空对象
+	case 1:
+		finalResult = aggregatedResults[0]
+	default:
+		// 简单聚合：假设每个 result 是合法 JSON，用逗号拼接成数组
+		// 生产环境建议用 json.RawMessage 严格处理
+		// 全程使用 []byte，避免 string 转换
+		joined := bytes.Join(aggregatedResults, []byte(","))
+		finalResult = make([]byte, 0, len(joined)+2)
+		finalResult = append(finalResult, '[')
+		finalResult = append(finalResult, joined...)
+		finalResult = append(finalResult, ']')
+	}
+
 	return &pb.ToolResponse{
 		ServiceName: b.handler.ServiceName(),
-		Status:      "ok",
-		Result:      result,
+		Status:      status,
+		Result:      finalResult, // bytes 类型，直接赋值
+		Errors:      allErrors,   // ✅ 结构化错误列表
 	}, nil
 }
 
@@ -280,7 +312,7 @@ func (b *BaseHub) DispatchStream(stream pb.HubService_DispatchStreamServer) erro
 
 		targets, err := b.handler.Execute(req)
 		if err != nil {
-			_ = stream.Send(errorResp(b.handler.ServiceName(), err.Error()))
+			_ = stream.Send(errorResp(b.handler.ServiceName(), "EXECUTE_FAILED", err.Error(), ""))
 			continue
 		}
 
@@ -289,7 +321,7 @@ func (b *BaseHub) DispatchStream(stream pb.HubService_DispatchStreamServer) erro
 
 		for _, r := range results {
 			if r.Err != nil {
-				_ = stream.Send(errorResp(b.handler.ServiceName(), r.Err.Error()))
+				_ = stream.Send(errorResp(b.handler.ServiceName(), "DISPATCH_ERROR", r.Err.Error(), r.Target.Addr))
 				continue
 			}
 			for _, resp := range r.Responses {
@@ -303,27 +335,22 @@ func (b *BaseHub) DispatchStream(stream pb.HubService_DispatchStreamServer) erro
 
 // ── 定时派发 ─────────────────────────────────────────────
 
-// func (b *BaseHub) trigger() {
-// 	targets, err := b.handler.Execute(nil)
-// 	if err != nil {
-// 		log.Printf("[%s] trigger Execute 失败: %v", b.handler.ServiceName(), err)
-// 		return
-// 	}
-// 	results := b.sendAll(b.ctx, targets)
-// 	b.handler.OnResults(results)
-// }
-
 func (b *BaseHub) dispatchLoop(interval time.Duration) {
 	log.Printf("[%s] dispatch loop 已启动", b.handler.ServiceName())
-	for {
-		select {
-		case <-b.ctx.Done():
-			log.Printf("[%s] dispatch loop 已退出", b.handler.ServiceName())
-			return
-			// case <-ticker.C:
-			// 	b.trigger()
+	// 当前为空实现，预留定时触发逻辑
+	// 如需启用，取消下方注释并实现 trigger()
+	/*
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-b.ctx.Done():
+				return
+			case <-ticker.C:
+				b.trigger()
+			}
 		}
-	}
+	*/
 }
 
 // ── 底层发送（并发版） ────────────────────────────────────
@@ -429,13 +456,24 @@ func (b *BaseHub) callStream(ctx context.Context, addr string, req *pb.ToolReque
 	return responses, nil
 }
 
-// ── 辅助 ─────────────────────────────────────────────────
+// ── 辅助函数：构造结构化错误响应 ─────────────────────────
 
-func errorResp(serviceName, msg string) *pb.ToolResponse {
+// errorResp 返回包含结构化错误的 ToolResponse
+// code: 错误码，如 "INTERNAL_ERROR"
+// msg: 人类可读的错误描述
+// field: 可选，关联的字段名（如 "params.city"）
+func errorResp(serviceName, code, msg, field string) *pb.ToolResponse {
 	return &pb.ToolResponse{
 		ServiceName: serviceName,
 		Status:      "error",
-		Result:      msg,
+		Result:      []byte("{}"), // 错误时返回空对象，避免客户端解析异常
+		Errors: []*pb.ErrorDetail{
+			{
+				Code:    code,
+				Message: msg,
+				Field:   field,
+			},
+		},
 	}
 }
 
@@ -443,35 +481,10 @@ func errorResp(serviceName, msg string) *pb.ToolResponse {
 //  公开 API：主动发送
 // ════════════════════════════════════════════════════════════
 
-// Handler 返回当前绑定的 HubHandler。
-// 场景：main 里需要在 Serve 阻塞前单独访问 handler 时使用。
 func (b *BaseHub) Handler() HubHandler {
 	return b.handler
 }
 
-// Dispatch 主动向下游发送一次请求，阻塞直到所有响应收完后返回。
-//
-// 与定时触发（trigger）、gRPC 入站（DispatchSimple/DispatchStream）
-// 三条路径最终都收敛到同一个 sendAll，行为完全一致。
-//
-// 参数：
-//
-//	ctx  — 调用方控制的超时上下文，推荐设置合理的 deadline
-//	req  — 要发送的请求；框架会调用 handler.Execute(req) 决定路由目标
-//
-// 返回：
-//
-//	[]DispatchResult — 每个目标的响应列表；路由失败或无目标时返回 nil
-//
-// 示例：
-//
-//	hub := hubbase.New(handler)
-//	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-//	defer cancel()
-//	results := hub.Dispatch(ctx, &pb.ToolRequest{
-//	    ServiceName: "hello",
-//	    Params:      map[string]string{"count": "3"},
-//	})
 func (b *BaseHub) Dispatch(ctx context.Context, req *pb.ToolRequest) []DispatchResult {
 	targets, err := b.handler.Execute(req)
 	if err != nil {

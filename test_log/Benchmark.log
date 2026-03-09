@@ -1,12 +1,20 @@
-BenchmarkDispatch_Hello-8
-    1346           1668585 ns/op            7601 B/op        140 allocs/op
+BenchmarkDispatch_Concurrency/concurrency=10-8
+   10000            239855 ns/op            1738 B/op         37 allocs/op
 PASS
-ok      github.com/sukasukasuka123/microHub/hub 4.127s
-BenchmarkDispatch_Parallel-8
-    2912            902291 ns/op            7593 B/op        140 allocs/op
+ok      github.com/sukasukasuka123/microHub/cmd/hub     3.365s
+BenchmarkDispatch_Concurrency/concurrency=50-8 
+   10000            192102 ns/op            1774 B/op            37 allocs/op
 PASS
-ok      github.com/sukasukasuka123/microHub/hub 4.549s
-BenchmarkDispatch_MultiTool-8
-     319           3213871 ns/op           15280 B/op        280 allocs/op
+ok      github.com/sukasukasuka123/microHub/cmd/hub     2.967s
+BenchmarkDispatch_Concurrency/concurrency=100-8
+   10000            257587 ns/op            1787 B/op         37 allocs/op
 PASS
-ok      github.com/sukasukasuka123/microHub/hub 2.363s
+ok      github.com/sukasukasuka123/microHub/cmd/hub     3.596s
+BenchmarkDispatch_Concurrency/concurrency=200-8                    
+   10000            207794 ns/op      1801 B/op          37 allocs/op
+PASS
+ok      github.com/sukasukasuka123/microHub/cmd/hub     3.234s
+BenchmarkDispatch_Concurrency/concurrency=500-8                    
+   13800            283163 ns/op      1762 B/op          37 allocs/op
+PASS
+ok      github.com/sukasukasuka123/microHub/cmd/hub     5.110s

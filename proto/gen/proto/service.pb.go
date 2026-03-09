@@ -22,10 +22,10 @@ const (
 )
 
 type ToolRequest struct {
-	state       protoimpl.MessageState `protogen:"open.v1"`
-	From        string                 `protobuf:"bytes,1,opt,name=from,proto3" json:"from,omitempty"`
-	ServiceName string                 `protobuf:"bytes,2,opt,name=service_name,json=serviceName,proto3" json:"service_name,omitempty"`
-	Method      string                 `protobuf:"bytes,3,opt,name=method,proto3" json:"method,omitempty"`
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	HubName string                 `protobuf:"bytes,1,opt,name=hub_name,json=hubName,proto3" json:"hub_name,omitempty"`
+	TaskId  string                 `protobuf:"bytes,2,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
+	Method  string                 `protobuf:"bytes,3,opt,name=method,proto3" json:"method,omitempty"`
 	// 新字段：JSON 序列化的入参（bytes）
 	Params        []byte `protobuf:"bytes,4,opt,name=params,proto3" json:"params,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -62,16 +62,16 @@ func (*ToolRequest) Descriptor() ([]byte, []int) {
 	return file_proto_service_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *ToolRequest) GetFrom() string {
+func (x *ToolRequest) GetHubName() string {
 	if x != nil {
-		return x.From
+		return x.HubName
 	}
 	return ""
 }
 
-func (x *ToolRequest) GetServiceName() string {
+func (x *ToolRequest) GetTaskId() string {
 	if x != nil {
-		return x.ServiceName
+		return x.TaskId
 	}
 	return ""
 }
@@ -92,10 +92,11 @@ func (x *ToolRequest) GetParams() []byte {
 
 type ToolResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	ServiceName   string                 `protobuf:"bytes,1,opt,name=service_name,json=serviceName,proto3" json:"service_name,omitempty"`
-	Status        string                 `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"` // "ok", "error", "partial"
-	Result        []byte                 `protobuf:"bytes,3,opt,name=result,proto3" json:"result,omitempty"`
-	Errors        []*ErrorDetail         `protobuf:"bytes,4,rep,name=errors,proto3" json:"errors,omitempty"`
+	ToolName      string                 `protobuf:"bytes,1,opt,name=tool_name,json=toolName,proto3" json:"tool_name,omitempty"`
+	TaskId        string                 `protobuf:"bytes,2,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
+	Status        string                 `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"` // "ok", "error", "partial"
+	Result        []byte                 `protobuf:"bytes,4,opt,name=result,proto3" json:"result,omitempty"`
+	Errors        []*ErrorDetail         `protobuf:"bytes,5,rep,name=errors,proto3" json:"errors,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -130,9 +131,16 @@ func (*ToolResponse) Descriptor() ([]byte, []int) {
 	return file_proto_service_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *ToolResponse) GetServiceName() string {
+func (x *ToolResponse) GetToolName() string {
 	if x != nil {
-		return x.ServiceName
+		return x.ToolName
+	}
+	return ""
+}
+
+func (x *ToolResponse) GetTaskId() string {
+	if x != nil {
+		return x.TaskId
 	}
 	return ""
 }
@@ -283,17 +291,18 @@ var File_proto_service_proto protoreflect.FileDescriptor
 
 const file_proto_service_proto_rawDesc = "" +
 	"\n" +
-	"\x13proto/service.proto\x12\x11micro_service_mvp\"t\n" +
-	"\vToolRequest\x12\x12\n" +
-	"\x04from\x18\x01 \x01(\tR\x04from\x12!\n" +
-	"\fservice_name\x18\x02 \x01(\tR\vserviceName\x12\x16\n" +
+	"\x13proto/service.proto\x12\x11micro_service_mvp\"q\n" +
+	"\vToolRequest\x12\x19\n" +
+	"\bhub_name\x18\x01 \x01(\tR\ahubName\x12\x17\n" +
+	"\atask_id\x18\x02 \x01(\tR\x06taskId\x12\x16\n" +
 	"\x06method\x18\x03 \x01(\tR\x06method\x12\x16\n" +
-	"\x06params\x18\x04 \x01(\fR\x06params\"\x99\x01\n" +
-	"\fToolResponse\x12!\n" +
-	"\fservice_name\x18\x01 \x01(\tR\vserviceName\x12\x16\n" +
-	"\x06status\x18\x02 \x01(\tR\x06status\x12\x16\n" +
-	"\x06result\x18\x03 \x01(\fR\x06result\x126\n" +
-	"\x06errors\x18\x04 \x03(\v2\x1e.micro_service_mvp.ErrorDetailR\x06errors\"e\n" +
+	"\x06params\x18\x04 \x01(\fR\x06params\"\xac\x01\n" +
+	"\fToolResponse\x12\x1b\n" +
+	"\ttool_name\x18\x01 \x01(\tR\btoolName\x12\x17\n" +
+	"\atask_id\x18\x02 \x01(\tR\x06taskId\x12\x16\n" +
+	"\x06status\x18\x03 \x01(\tR\x06status\x12\x16\n" +
+	"\x06result\x18\x04 \x01(\fR\x06result\x126\n" +
+	"\x06errors\x18\x05 \x03(\v2\x1e.micro_service_mvp.ErrorDetailR\x06errors\"e\n" +
 	"\vErrorDetail\x12\x12\n" +
 	"\x04code\x18\x01 \x01(\tR\x04code\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12\x14\n" +

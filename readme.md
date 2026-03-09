@@ -1,62 +1,299 @@
-# 🚀 microHub 使用指南
+# microHub
 
-一个基于 gRPC 的轻量级微服务调度框架，支持**服务注册发现**、**连接池热更新**、**结构化错误传递**和**契约优先的接口定义**。
-
----
-
-## 📐 架构概览
-
-```
-┌─────────────────┐
-│   Client / Hub  │
-└────────┬────────┘
-         │ gRPC (DispatchSimple/Stream)
-         ▼
-┌─────────────────┐
-│   BaseHub       │  ← 路由转发 + 连接池 + 结果聚合
-│   (框架层)       │
-└────────┬────────┘
-         │ 按 service_name / method 路由
-         ▼
-┌─────────────────┐     ┌─────────────────┐
-│   BaseTool      │     │   BaseTool      │
-│   hello:50052   │     │   world:50053   │
-│   (业务方实现)   │     │   (业务方实现)   │
-└─────────────────┘     └─────────────────┘
-```
-
-**核心组件**：
-| 组件 | 职责 | 是否需业务方实现 |
-|------|------|-----------------|
-| `BaseHub` | 路由转发、连接池管理、结果聚合、结构化错误包装 | ❌ 框架提供 |
-| `BaseTool` | gRPC 服务端封装、参数透传、错误包装 | ❌ 框架提供 |
-| `ToolHandler` | 业务逻辑：解析参数、执行业务、构造响应 | ✅ 业务方实现 |
-| `HubHandler` | 路由策略：按 name/method 路由、结果回调 | ✅ 业务方实现 |
-| `registry.yaml` | 服务注册表 + 连接池配置 + 接口契约文档 | ✅ 配置文件 |
+基于 gRPC 双向流的轻量级微服务调度框架。Hub 作为调度中心，通过长连接流池向多个 Tool 并发派发任务，Tool 以流式帧返回结果。
 
 ---
 
-## 🎯 快速开始
-
-### 1️⃣ 准备项目结构
+## 架构概览
 
 ```
-my-microhub/
+外部调用者
+    │  hub.Dispatch(ctx, req)
+    ▼
+┌─────────────────────────────────┐
+│  BaseHub                        │
+│  ├── HubHandler（业务方实现）    │  ← 路由策略、结果回调
+│  ├── poolManager                │  ← addr → StreamPool 映射
+│  │     └── StreamPool × N       │  ← 每个 Tool 一个流池
+│  │           └── SingleStream×M │  ← min/max 条双向流
+│  └── timerLoop（可选）           │  ← 定时广播
+└─────────────┬───────────────────┘
+              │  gRPC DispatchStream（双向流）
+    ┌─────────┴──────────┐
+    ▼                    ▼
+┌─────────┐          ┌─────────┐
+│ BaseTool│          │ BaseTool│
+│ hello   │          │ world   │
+│ :50052  │          │ :50053  │
+└─────────┘          └─────────┘
+```
+
+**星形拓扑**：Hub 是唯一的调度中心，Tool 只和 Hub 通信，Tool 之间不直接连接。每个 Tool 地址对应一个 `StreamPool`，池内维护 min～max 条长连接双向流，请求发完立即归还流，响应通过 `pendingTask` channel 异步接收。
+
+---
+
+## 数据流
+
+以 `Dispatch(ctx, req{Method:"Hello", count:3})` 为例：
+
+```
+BaseHub.Dispatch
+  └─ HubHandler.Execute(req)          // 业务方路由，返回 DispatchTarget 列表
+       └─ dispatchAll(targets)
+            └─ go callStream(addr, req)  // 每个 target 一个 goroutine
+                 ├─ proto.Clone(req)     // 深拷贝，并发安全
+                 ├─ req.TaskId = newTaskID()
+                 ├─ StreamPool.Get()     // 从池中借一条流
+                 ├─ SingleStream.Send(req)
+                 │    ├─ pending.Store(taskId, pendingTask{resChan, done})
+                 │    └─ stream.Send(req)   // → gRPC → Tool 进程
+                 ├─ StreamPool.Put()     // 立即归还！流继续复用
+                 └─ 等待：select { resChan / done / ctx }
+
+Tool 进程（BaseTool）：
+  recvLoop → taskCh → executeLoop → go executeOne
+    └─ ToolHandler.Execute(req)     // 业务方实现，返回 <-chan *ToolResponse
+         └─ goroutine 生产帧：
+              ch <- PartialResp(loop_idx=1)   // status="partial"
+              ch <- PartialResp(loop_idx=2)
+              ch <- OKResp(loop_idx=3)        // status="ok"，最后一帧
+              close(ch)
+    └─ respCh → sendLoop → stream.Send(resp) × 3
+
+Hub 侧 SingleStream.recvLoop：
+  stream.Recv() × 3
+    └─ dispatch(resp)
+         ├─ partial 帧 → task.resChan <- resp
+         ├─ partial 帧 → task.resChan <- resp
+         └─ ok 帧 → pending.Delete → task.resChan <- resp → task.finish()
+
+callStream 收集：
+  [partial(1), partial(2), ok(3)] → return []DispatchResult
+```
+
+**帧协议约定**：`status="partial"` 为中间帧，框架继续等待；`status="ok"` 或 `status="error"` 为结束帧，框架触发 `finish()` 结束收集。**所有多帧响应必须遵守此约定**，否则只会收到第一帧。
+
+### 更加详细的解读：
+
+#### Hub 架构解读
+
+##### 整体结构
+
+```
+外部调用者
+    │  Dispatch(ctx, req)
+    ▼
+ BaseHub
+    ├── handler (HubHandler)     ← 业务方实现，决定路由
+    ├── pm (poolManager)         ← addr → StreamPool 映射
+    │       └── StreamPool × N  ← 每个 Tool 地址一个
+    │               ├── grpc.ClientConn   ← 底层 TCP 连接（唯一）
+    │               ├── HubServiceClient  ← 缓存，不重复 alloc
+    │               └── Pool[*SingleStream] ← 流池，min/max 条流
+    │                       └── SingleStream × M
+    │                               ├── recvLoop goroutine
+    │                               └── pending sync.Map
+    └── ctx/cancel               ← 生命周期控制
+```
+
+星形拓扑：Hub 是中心，每个 Tool 对应一个 `StreamPool`，池内有多条 `SingleStream`，每条流是一个独立的 gRPC 双向流。
+
+---
+
+##### 数据流：一次完整的 `Dispatch`
+
+以 `Dispatch(ctx, req{"Method":"Hello"})` 为例，count=3（3帧响应）：
+
+```
+─────────────────────────────────────────────────────────────
+阶段 1：路由
+─────────────────────────────────────────────────────────────
+
+BaseHub.Dispatch(ctx, req)
+  │
+  ├─ handler.Execute(req)
+  │     └─ MainHubHandler.routeByMethod(req)
+  │           └─ registry.SelectToolByMethod("Hello")
+  │                 └─ 返回 {Addr:"localhost:50052", Method:"Hello"}
+  │
+  └─ 返回 []DispatchTarget{
+         {Addr:"localhost:50052", Request:req, Stream:true}
+     }
+
+─────────────────────────────────────────────────────────────
+阶段 2：并发派发 dispatchAll
+─────────────────────────────────────────────────────────────
+
+BaseHub.dispatchAll(ctx, targets)
+  │
+  ├─ proto.Clone(target.Request)       ← 深拷贝，并发安全
+  ├─ req.HubName = "main_hub"          ← 补全
+  ├─ req.TaskId  = "main_hub-17730...-1" ← 全局唯一
+  │
+  └─ go func → BaseHub.callStream(ctx, "localhost:50052", req)
+
+─────────────────────────────────────────────────────────────
+阶段 3：发送请求 callStream
+─────────────────────────────────────────────────────────────
+
+BaseHub.callStream
+  │
+  ├─ pm.get("localhost:50052") → StreamPool
+  ├─ StreamPool.Get(ctx)       → pool.Resource[*SingleStream]
+  │       Pool 内部：从空闲队列取一条流，无则新建（调 streamResource.Create）
+  │
+  ├─ SingleStream.Send(req)
+  │       ├─ newPendingTask(bufSize=8)
+  │       │     └─ pendingTask{
+  │       │           resChan: make(chan *ToolResponse, 8),
+  │       │           done:    make(chan struct{}),
+  │       │        }
+  │       ├─ pending.Store("main_hub-...-1", task)  ← 注册到 sync.Map
+  │       └─ stream.Send(req)   ← 写入 gRPC 底层发送缓冲
+  │                                  （HTTP/2 DATA frame → loopback TCP）
+  │
+  ├─ StreamPool.Put(res)   ← 立即归还！流还在飞，但归还给池复用
+  │
+  └─ 进入等待循环：
+       for {
+         select {
+           case resp := <-task.resChan  ← 收到一帧
+           case <-task.done             ← 任务结束
+           case <-ctx.Done()            ← 超时
+         }
+       }
+
+─────────────────────────────────────────────────────────────
+阶段 4：Tool 侧处理（独立进程）
+─────────────────────────────────────────────────────────────
+
+BaseTool.recvLoop（streamSession）
+  │  stream.Recv() ← 收到 req
+  │
+  └─ taskCh <- task{req}   ← 投入任务队列（buffer=128）
+
+BaseTool.executeLoop
+  │  <-taskCh
+  │
+  └─ go executeOne(req)
+         │
+         ├─ HelloHandler.Execute(req)
+         │     └─ 返回 ch chan *ToolResponse（buffer=3）
+         │           goroutine 写入：
+         │             ch <- PartialResp(loop_idx=1)
+         │             ch <- PartialResp(loop_idx=2)
+         │             ch <- OKResp(loop_idx=3)
+         │             close(ch)
+         │
+         └─ for resp := range ch {
+               respCh <- resp   ← 写入 session 的 respCh（buffer=256）
+            }
+
+BaseTool.sendLoop
+  │  <-respCh
+  │
+  └─ stream.Send(resp) × 3   ← 3帧写回 gRPC 流
+
+─────────────────────────────────────────────────────────────
+阶段 5：Hub 收帧 recvLoop → dispatch
+─────────────────────────────────────────────────────────────
+
+SingleStream.recvLoop（独立 goroutine，建流时启动）
+  │
+  ├─ stream.Recv() → resp{TaskId="main_hub-...-1", Status="partial", loop_idx=1}
+  │     └─ dispatch(resp)
+  │           ├─ pending.Load("main_hub-...-1") → task
+  │           ├─ isLast = false（partial）
+  │           └─ task.resChan <- resp   ← 写入 channel（不阻塞，buf=8）
+  │
+  ├─ stream.Recv() → resp{Status="partial", loop_idx=2}
+  │     └─ dispatch(resp)
+  │           └─ task.resChan <- resp
+  │
+  └─ stream.Recv() → resp{Status="ok", loop_idx=3}
+        └─ dispatch(resp)
+              ├─ isLast = true（非 partial）
+              ├─ pending.Delete("main_hub-...-1")  ← 从 map 摘除
+              ├─ task.resChan <- resp              ← 先写数据
+              └─ task.finish()                    ← 再关闭 done
+
+─────────────────────────────────────────────────────────────
+阶段 6：callStream 收集结果，返回
+─────────────────────────────────────────────────────────────
+
+callStream 的等待循环：
+
+  第1次 select：
+    case resp := <-task.resChan → partial(1)，append 到 responses
+
+  第2次 select：
+    task.done 和 task.resChan 可能同时就绪（Go 随机选）
+    case resp := <-task.resChan → partial(2)，append
+
+  第3次 select：
+    case resp := <-task.resChan → ok(3)，append
+    （done 也就绪了）
+
+  第4次 select：
+    case <-task.done → 进入排空循环：
+      inner select default → chan 空，return responses
+
+  返回 [partial(1), partial(2), ok(3)]
+
+─────────────────────────────────────────────────────────────
+阶段 7：收尾
+─────────────────────────────────────────────────────────────
+
+dispatchAll.wg.Done()
+  └─ wg.Wait() 解除阻塞
+
+BaseHub.Dispatch
+  ├─ handler.OnResults(results)   ← 业务方日志/监控
+  └─ return []DispatchResult{
+         {Addr:"localhost:50052", Responses:[3帧], Err:nil}
+     }
+```
+
+---
+
+##### 关键设计决策
+
+**`StreamPool.Put` 在 `Send` 之后立即归还**，而不是等响应回来。这是长连接流的核心优势——流是复用的，发完请求就还给池，下一个请求可以立即复用这条流发另一个任务，两个任务的请求和响应在同一条 HTTP/2 连接上交织传输，互不阻塞。等待响应的工作由 `pendingTask` 的 channel 接管。
+
+**`pending sync.Map` 是多路复用的关键**，它把"哪个响应属于哪个请求"这个问题解耦到了 task_id 层面，使得一条流上可以同时有多个 in-flight 请求，每个请求有自己的 `resChan` 和 `done`，互不干扰。
+
+**`recvLoop` 是单 goroutine 串行处理响应**，不会有并发写同一个 `pendingTask` 的问题，所以 `pendingTask` 内部不需要锁。`pending.Store` 和 `pending.Load` 之间的并发安全由 `sync.Map` 保证。
+
+**`dispatch` 里的顺序**（`pending.Delete` → `resChan <-` → `finish()`）保证了 `callStream` 在 `done` 关闭后排空 `resChan` 时数据已经就位，不会漏帧。
+
+---
+
+## 快速开始
+
+### 目录结构
+
+```
+my-project/
 ├── config/
-│   └── registry.yaml          # 服务注册表 + 配置
+│   └── registry.yaml
 ├── cmd/
-│   ├── hub/                   # Hub 服务入口
-│   │   └── main.go
-│   ├── hello/                 # hello 工具服务
-│   │   └── main.go
-│   └── world/                 # world 工具服务
-│       └── main.go
-├── proto/
-│   └── hub.proto              # gRPC 协议定义
-└── go.mod
+│   ├── hub/
+│   │   ├── main.go
+│   │   └── hub_test.go
+│   └── tools/
+│       ├── hello/main.go
+│       └── world/main.go
+├── pb_api/
+│   └── builder.go          // 框架提供，构造 ToolRequest/ToolResponse
+├── proto/gen/proto/
+│   ├── service.pb.go
+│   └── service_grpc.pb.go
+└── root_class/
+    ├── hub/baseHub.go
+    └── tool/baseTool.go
 ```
 
-### 2️⃣ 编写 `config/registry.yaml`
+### 1. 配置 registry.yaml
 
 ```yaml
 services:
@@ -64,537 +301,434 @@ services:
     - name: "hello"
       addr: "localhost:50052"
       method: "Hello"
-      # 接口契约：输入参数格式（供文档/校验使用）
-      input_schema: |
-        {
-          "type": "object",
-          "data": {
-            "count":  { "type": "integer", "default": 1, "min": 1, "max": 10 },
-            "prefix": { "type": "string",  "default": "Hello" }
-          }
-        }
-      # 接口契约：输出响应格式
-      output_schema: |
-        {
-          "type": "object",
-          "data": {
-            "message":  { "type": "string" },
-            "from":     { "type": "string" },
-            "loop_idx": { "type": "integer" },
-            "total":    { "type": "integer" }
-          }
-        }
+      in_type: object
+      out_type: object
 
     - name: "world"
       addr: "localhost:50053"
       method: "World"
-      input_schema: |
-        {
-          "type": "object",
-          "data": {
-            "count": { "type": "integer", "default": 1, "min": 1, "max": 5 },
-            "name":  { "type": "string",  "default": "World" }
-          }
-        }
-      output_schema: |
-        {
-          "type": "object",
-          "data": {
-            "greeting":  { "type": "string" },
-            "iteration": { "type": "integer" }
-          }
-        }
+      in_type: object
+      out_type: object
 
   hubs:
     - name: "main_hub"
       addr: "localhost:50051"
-      registered_at: "2024-01-01T00:00:00Z"
 
-# gRPC 连接池配置
 pool:
   grpc_conn:
-    min_size: 24              # 最小连接数
-    max_size: 130             # 最大连接数
-    idle_buffer_factor: 0.55  # 空闲缓冲比例
-    survive_time_sec: 180     # 空闲连接存活时间
-    monitor_interval_sec: 6   # 健康检查间隔
-    max_retries: 3            # 连接失败重试次数
-    retry_interval_ms: 200    # 重试间隔
-    reconnect_on_get: false   # 获取连接时是否重连（gRPC 自带重连，通常设为 false）
+    min_size: 24
+    max_size: 130
+    idle_buffer_factor: 0.55
+    survive_time_sec: 180
+    monitor_interval_sec: 6
+    max_retries: 3
+    retry_interval_ms: 200
+    reconnect_on_get: false
 ```
 
-### 3️⃣ 实现 Tool 服务（以 `hello` 为例）
+### 2. 实现 Tool（以 hello 为例）
 
 ```go
-// cmd/hello/main.go
 package main
 
 import (
-	"encoding/json"
-	"fmt"
-	"log"
+    "encoding/json"
+    "fmt"
+    "log"
 
-	pb "github.com/sukasukasuka123/microHub/proto/gen/proto"
-	tool "github.com/sukasukasuka123/microHub/root_class/tool"
+    pb     "github.com/sukasukasuka123/microHub/proto/gen/proto"
+    pb_api "github.com/sukasukasuka123/microHub/pb_api"
+    "github.com/sukasukasuka123/microHub/root_class/tool"
 )
 
-// 请求参数结构（与 input_schema 对应）
-type HelloRequest struct {
-	Count  int    `json:"count"`
-	Prefix string `json:"prefix"`
+type HelloParams struct {
+    Count  int    `json:"count"`
+    Prefix string `json:"prefix"`
 }
 
-// 响应数据结构（与 output_schema 对应）
-type HelloResponse struct {
-	Message string `json:"message"`
-	From    string `json:"from"`
-	LoopIdx int    `json:"loop_idx"`
-	Total   int    `json:"total"`
+type HelloResult struct {
+    Message string `json:"message"`
+    From    string `json:"from"`
+    LoopIdx int    `json:"loop_idx"`
+    Total   int    `json:"total"`
 }
 
 type HelloHandler struct{}
 
 func (h *HelloHandler) ServiceName() string { return "hello" }
 
-func (h *HelloHandler) Execute(req *pb.ToolRequest) ([]*pb.ToolResponse, error) {
-	// 1. 解析参数（[]byte → struct）
-	var params HelloRequest
-	if len(req.Params) > 0 {
-		if err := json.Unmarshal(req.Params, &params); err != nil {
-			return nil, fmt.Errorf("parse params: %w", err)
-		}
-	}
-	// 2. 默认值 + 校验
-	if params.Count <= 0 { params.Count = 1 }
-	if params.Count > 10 { params.Count = 10 }
-	if params.Prefix == "" { params.Prefix = "Hello" }
+// Execute 同步解析参数，异步生产响应帧。
+// 返回值是只读 channel，框架负责消费；关闭 channel 表示任务完成。
+func (h *HelloHandler) Execute(req *pb.ToolRequest) (<-chan *pb.ToolResponse, error) {
+    var params HelloParams
+    if len(req.Params) > 0 {
+        if err := json.Unmarshal(req.Params, &params); err != nil {
+            return nil, fmt.Errorf("parse params: %w", err)
+        }
+    }
+    if params.Count <= 0 { params.Count = 1 }
+    if params.Count > 10 { return nil, fmt.Errorf("count %d exceeds max 10", params.Count) }
+    if params.Prefix == "" { params.Prefix = "Hello" }
 
-	// 3. 执行业务逻辑
-	var resps []*pb.ToolResponse
-	for i := 1; i <= params.Count; i++ {
-		respData := HelloResponse{
-			Message: params.Prefix, From: "hello", LoopIdx: i, Total: params.Count,
-		}
-		// ✅ 使用工具函数自动序列化 Result 为 []byte
-		resp, _ := tool.NewOKResp("hello", respData)
-		resps = append(resps, resp)
-	}
-	return resps, nil
+    ch := make(chan *pb.ToolResponse, params.Count)
+    go func() {
+        defer close(ch)
+        for i := 1; i <= params.Count; i++ {
+            isLast := i == params.Count
+            var resp *pb.ToolResponse
+            var err error
+            if isLast {
+                resp, err = pb_api.OKResp("hello", req.TaskId, HelloResult{
+                    Message: params.Prefix, From: "hello", LoopIdx: i, Total: params.Count,
+                })
+            } else {
+                resp, err = pb_api.PartialResp("hello", req.TaskId, HelloResult{
+                    Message: params.Prefix, From: "hello", LoopIdx: i, Total: params.Count,
+                })
+            }
+            if err != nil {
+                ch <- pb_api.ErrorResp("hello", req.TaskId, "BUILD_RESP", err.Error(), "")
+                return
+            }
+            ch <- resp
+        }
+    }()
+    return ch, nil
 }
 
 func main() {
-	t := tool.New(&HelloHandler{})
-	log.Println("[hello] 启动服务 :50052")
-	if err := t.Serve(":50052"); err != nil {
-		log.Fatalf("[hello] Serve failed: %v", err)
-	}
+    t := tool.New(&HelloHandler{})
+    log.Println("[hello] 启动 :50052")
+    if err := t.Serve(":50052"); err != nil {
+        log.Fatalf("[hello] %v", err)
+    }
 }
 ```
 
-### 4️⃣ 实现 Hub 服务
+**关键点**：
+- 单帧响应（count=1）直接发 `ok`；多帧响应中间帧发 `partial`，最后帧发 `ok`
+- 参数解析在 goroutine 启动前同步完成，解析失败直接 `return nil, err`
+- `defer close(ch)` 是框架感知任务结束的唯一信号，不能省略
+
+### 3. 实现 Hub
 
 ```go
-// cmd/hub/main.go（简化版）
 package main
 
 import (
-	"context"
-	"encoding/json"
-	"log"
-	"time"
+    "context"
+    "log"
+    "time"
 
-	pb "github.com/sukasukasuka123/microHub/proto/gen/proto"
-	hubbase "github.com/sukasukasuka123/microHub/root_class/hub"
-	registry "github.com/sukasukasuka123/microHub/service_registry"
+    pb     "github.com/sukasukasuka123/microHub/proto/gen/proto"
+    pb_api "github.com/sukasukasuka123/microHub/pb_api"
+    hub    "github.com/sukasukasuka123/microHub/root_class/hub"
+    reg    "github.com/sukasukasuka123/microHub/service_registry"
 )
 
 type MainHubHandler struct{}
 
-func (h *MainHubHandler) ServiceName() string { return "hub" }
+func (h *MainHubHandler) ServiceName() string { return "main_hub" }
 
-// 路由策略：按 service_name 或 method 路由
-func (h *MainHubHandler) Execute(req *pb.ToolRequest) ([]hubbase.DispatchTarget, error) {
-	if req.ServiceName != "" {
-		t, ok := registry.SelectToolByName(req.ServiceName)
-		if !ok { return nil, nil }
-		return []hubbase.DispatchTarget{{Addr: t.Addr, Request: req, Stream: true}}, nil
-	}
-	// 可按 method 路由或广播...
-	return nil, nil
+// Execute 路由策略：req==nil 表示定时触发（广播），否则按 method 路由。
+func (h *MainHubHandler) Execute(req *pb.ToolRequest) ([]hub.DispatchTarget, error) {
+    if req == nil {
+        return h.broadcast()
+    }
+    t, ok := reg.SelectToolByMethod(req.Method)
+    if !ok {
+        return nil, nil
+    }
+    return []hub.DispatchTarget{
+        {Addr: t.Addr, Request: req, Stream: true},
+    }, nil
 }
 
-// 结果回调：日志/监控/告警
-func (h *MainHubHandler) OnResults(results []hubbase.DispatchResult) {
-	for _, r := range results {
-		if r.Err != nil {
-			log.Printf("[Hub] ✗ addr=%s err=%v", r.Target.Addr, r.Err)
-			continue
-		}
-		for _, resp := range r.Responses {
-			if resp.Status == "ok" {
-				log.Printf("[Hub] ✓ [%s] %s", resp.ServiceName, string(resp.Result))
-			}
-		}
-	}
+func (h *MainHubHandler) broadcast() ([]hub.DispatchTarget, error) {
+    tools := reg.GetAllTools()
+    targets := make([]hub.DispatchTarget, 0, len(tools))
+    for _, t := range tools {
+        // 每个 target 必须有独立的 req，不能共享指针（并发写 TaskId 会竞态）
+        req, err := pb_api.Request().Method(t.Method).Params(map[string]int{"count": 1}).Build()
+        if err != nil {
+            return nil, err
+        }
+        targets = append(targets, hub.DispatchTarget{Addr: t.Addr, Request: req, Stream: true})
+    }
+    return targets, nil
 }
 
-// 返回所有工具地址，供连接池热更新
+func (h *MainHubHandler) OnResults(results []hub.DispatchResult) {
+    for _, r := range results {
+        if r.Err != nil {
+            log.Printf("[Hub] ✗ addr=%s err=%v", r.Target.Addr, r.Err)
+            continue
+        }
+        for _, resp := range r.Responses {
+            switch resp.Status {
+            case "ok":
+                log.Printf("[Hub] ✓ tool=%s task=%s result=%s", resp.ToolName, resp.TaskId, resp.Result)
+            case "partial":
+                log.Printf("[Hub] ↻ tool=%s task=%s partial=%s", resp.ToolName, resp.TaskId, resp.Result)
+            case "error":
+                for _, e := range resp.Errors {
+                    log.Printf("[Hub] ✗ tool=%s [%s] %s", resp.ToolName, e.Code, e.Message)
+                }
+            }
+        }
+    }
+}
+
 func (h *MainHubHandler) Addrs() []string {
-	tools := registry.GetAllTools()
-	addrs := make([]string, 0, len(tools))
-	for _, t := range tools { addrs = append(addrs, t.Addr) }
-	return addrs
+    tools := reg.GetAllTools()
+    addrs := make([]string, 0, len(tools))
+    for _, t := range tools {
+        addrs = append(addrs, t.Addr)
+    }
+    return addrs
 }
 
 func main() {
-	// 1. 初始化注册表（监听热更新）
-	registry.Init("config/registry.yaml")
-	
-	// 2. 创建 Hub 实例
-	hub := hubbase.New(&MainHubHandler{})
-	
-	// 3. 启动 gRPC 监听
-	go hub.ServeAsync(":50051", 0) // 0 = 不启动定时广播
-	time.Sleep(100 * time.Millisecond)
-	
-	// 4. 发送测试请求
-	params, _ := json.Marshal(map[string]int{"count": 3})
-	ctx := context.Background()
-	hub.Dispatch(ctx, &pb.ToolRequest{
-		ServiceName: "hello", Params: params,
-	})
-	
-	// 5. 阻塞主进程
-	select {}
-}
-```
-
-### 5️⃣ 启动服务
-
-```bash
-# terminal 1: hello 服务
-go run ./cmd/hello
-
-# terminal 2: world 服务
-go run ./cmd/world
-
-# terminal 3: hub 服务（含测试请求）
-go run ./cmd/hub
-```
-
-**预期输出**：
-```
-[Hub] ✓ [hello] result={"message":"Hello","from":"hello","loop_idx":1,"total":3}
-[Hub] ✓ [hello] result={"message":"Hello","from":"hello","loop_idx":2,"total":3}
-[Hub] ✓ [hello] result={"message":"Hello","from":"hello","loop_idx":3,"total":3}
-```
-
----
-
-## 🔧 配置详解：`registry.yaml`
-
-### 服务注册格式
-
-```yaml
-services:
-  tools:
-    - name: "your_service"      # ✅ 必填：服务唯一标识，与 ToolHandler.ServiceName() 一致
-      addr: "host:port"         # ✅ 必填：gRPC 服务地址
-      method: "MethodName"      # ✅ 必填：日志/路由标识
-      input_schema: |           # 📝 可选：输入参数契约（JSON Schema 格式）
-        {
-          "type": "object",
-          "data": {
-            "field1": { "type": "string", "default": "value" },
-            "field2": { "type": "integer", "min": 0, "max": 100 }
-          },
-          "required": ["field1"]
-        }
-      output_schema: |          # 📝 可选：输出响应契约
-        {
-          "type": "object",
-          "data": {
-            "result": { "type": "string" }
-          }
-        }
-```
-
-### Schema 规范（无歧义递归格式）
-
-```json
-{
-  "type": "object",           // ✅ 每个节点必须有 type
-  "data": {                   // ✅ object 类型的子字段放在 data 中
-    "username": { "type": "string" },
-    "age": { "type": "integer", "min": 0, "max": 120 },
-    "tags": {                 // ✅ array 类型用 items 定义元素
-      "type": "array",
-      "items": { "type": "string" }
-    },
-    "profile": {              // ✅ 嵌套 object
-      "type": "object",
-      "data": {
-        "email": { "type": "string" }
-      }
+    if err := reg.Init("config/registry.yaml"); err != nil {
+        log.Fatalf("registry init: %v", err)
     }
-  },
-  "required": ["username"]    // ✅ 必填字段列表
-}
-```
 
-**支持的类型**：`string` | `integer` | `number` | `boolean` | `object` | `array`
+    h := hub.New(&MainHubHandler{})
 
-**支持的校验规则**：
-| 规则 | 适用类型 | 说明 |
-|------|----------|------|
-| `default` | 所有 | 默认值 |
-| `min` / `max` | integer/number | 数值范围 |
-| `enum` | 所有 | 枚举值列表 `["a", "b", "c"]` |
-| `required` | object | 必填字段列表 |
+    // ServeAsync 第二个参数为定时广播间隔，0 = 不启动定时广播
+    go func() {
+        if err := h.ServeAsync(":50051", 0); err != nil {
+            log.Fatalf("ServeAsync: %v", err)
+        }
+    }()
+    time.Sleep(100 * time.Millisecond)
 
----
-
-## 🛠️ 开发指南
-
-### 创建新 Tool 服务
-
-1. **定义参数/响应结构**（与 `input_schema`/`output_schema` 保持一致）
-2. **实现 `ToolHandler` 接口**：
-   ```go
-   type MyHandler struct{}
-   func (h *MyHandler) ServiceName() string { return "my_service" }
-   func (h *MyHandler) Execute(req *pb.ToolRequest) ([]*pb.ToolResponse, error) {
-       // 1. 解析参数
-       var params MyRequest
-       json.Unmarshal(req.Params, &params)
-       
-       // 2. 业务逻辑
-       result := doSomething(params)
-       
-       // 3. 构造响应（自动序列化）
-       return tool.NewOKResp("my_service", result)
-   }
-   ```
-3. **启动服务**：`tool.New(&MyHandler{}).Serve(":500xx")`
-4. **注册到 `registry.yaml`**
-
-### 创建新 Hub 服务
-
-1. **实现 `HubHandler` 接口**：
-   ```go
-   type MyHubHandler struct{}
-   func (h *MyHubHandler) ServiceName() string { return "my_hub" }
-   
-   // 路由策略
-   func (h *MyHubHandler) Execute(req *pb.ToolRequest) ([]hubbase.DispatchTarget, error) {
-       // 按 service_name 路由
-       t, ok := registry.SelectToolByName(req.ServiceName)
-       if !ok { return nil, nil }
-       return []hubbase.DispatchTarget{{Addr: t.Addr, Request: req}}, nil
-   }
-   
-   // 结果处理
-   func (h *MyHubHandler) OnResults(results []hubbase.DispatchResult) {
-       // 日志/监控/告警
-   }
-   
-   // 返回工具地址列表
-   func (h *MyHubHandler) Addrs() []string {
-       // 从 registry 或配置读取
-   }
-   ```
-2. **启动 Hub**：
-   ```go
-   registry.Init("config/registry.yaml")
-   hub := hubbase.New(&MyHubHandler{})
-   hub.ServeAsync(":50051", 0)  // 0 = 不启动定时广播
-   ```
-
----
-
-## 📡 参数传递规范
-
-### ✅ 统一参数名约定
-
-| 参数名 | 类型 | 含义 | 适用场景 |
-|--------|------|------|----------|
-| `count` | integer | 循环/重复次数 | hello, world, 列表类服务 |
-| `limit` | integer | 分页每页数量 | 查询类服务 |
-| `offset` | integer | 分页偏移量 | 查询类服务 |
-| `name` / `id` | string | 资源标识 | 所有服务 |
-| `prefix` / `suffix` | string | 字符串修饰 | 文本处理服务 |
-
-> 🎯 **原则**：相同语义的参数，在所有服务中使用**相同的字段名**，降低集成成本。
-
-### ✅ 参数序列化
-
-```go
-// 发送方：序列化为 []byte
-params, _ := json.Marshal(map[string]interface{}{
-    "count": 3,
-    "prefix": "Hi",
-})
-req := &pb.ToolRequest{
-    ServiceName: "hello",
-    Params:      params,  // ✅ []byte 类型
-}
-
-// 接收方：解析为 struct
-var p HelloRequest
-json.Unmarshal(req.Params, &p)  // ✅ 自动映射
-```
-
----
-
-## 🧪 测试指南
-
-### 单元测试示例
-
-```go
-func TestDispatch_Hello(t *testing.T) {
+    // 主动派发示例
     ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
     defer cancel()
-    
-    results := testHub.Dispatch(ctx, &pb.ToolRequest{
-        ServiceName: "hello",
-        Params:      mustMarshal(map[string]int{"count": 3}), // ✅ []byte
-    })
-    
-    if len(results) == 0 { t.Fatal("no results") }
-    for _, r := range results {
-        if r.Err != nil { t.Errorf("dispatch failed: %v", r.Err) }
-        if len(r.Responses) != 3 { t.Errorf("expected 3 responses") }
-    }
-}
 
-// 辅助函数：简化参数序列化
-func mustMarshal(v interface{}) []byte {
-    b, err := json.Marshal(v)
-    if err != nil { panic(err) }
-    return b
+    req, _ := pb_api.Request().Method("Hello").Params(map[string]interface{}{
+        "count": 3, "prefix": "Hi",
+    }).Build()
+    results := h.Dispatch(ctx, req)
+    for _, r := range results {
+        log.Printf("addr=%s ok=%v frames=%d", r.Target.Addr, r.AllOK(), len(r.Responses))
+    }
+
+    select {}
 }
 ```
 
-### 运行测试
+### 4. 启动
 
 ```bash
-# 启动依赖服务后运行
-go test ./cmd/hub -v -run ^TestDispatch_Hello$
-
-# 压测
-go test ./cmd/hub -bench=. -benchtime=5s
-
-# 竞争检测
-go test ./cmd/hub -race -count=10
+go run ./cmd/tools/hello   # terminal 1
+go run ./cmd/tools/world   # terminal 2
+go run ./cmd/hub           # terminal 3
 ```
 
 ---
 
-## ❓ 常见问题
+## API 参考
 
-### Q: `params` 为什么是 `[]byte` 而不是 `map`？
-**A**：`[]byte` 是透明传输的 JSON 序列化结果，框架层不解析业务参数，保证：
-- ✅ 业务方完全控制解析策略（严格/宽松/默认值）
-- ✅ 避免框架与业务方的参数校验逻辑冲突
-- ✅ 支持任意复杂嵌套结构
+### ToolHandler 接口
 
-### Q: 如何调试参数解析失败？
-**A**：业务方 `Execute` 中解析失败时，直接 `return nil, err`，BaseTool 会自动包装为结构化错误：
-```json
-{
-  "status": "error",
-  "result": "{}",
-  "errors": [{
-    "code": "EXECUTE_FAILED",
-    "message": "parse params: invalid character 'x'...",
-    "field": ""
-  }]
+```go
+type ToolHandler interface {
+    ServiceName() string
+    Execute(req *pb.ToolRequest) (<-chan *pb.ToolResponse, error)
 }
 ```
 
-### Q: `registry.yaml` 热更新生效吗？
-**A**：✅ 是的。`service_registry.Watch()` 监听文件变化，自动：
-1. 重新解析配置
-2. 重建连接池（关闭旧连接，新建连接）
-3. 通过 `changeCh` 通知 Hub 更新路由
-
-### Q: 如何添加新字段到 `ToolRequest`？
-**A**：
-1. 修改 `proto/hub.proto`，添加字段（注意字段号递增）
-2. `protoc` 重新生成 Go 代码
-3. 业务方按需使用新字段（旧代码兼容，新字段为零值）
-
----
-
-## 📦 项目依赖
+可选接口，实现后框架在每条流建立时注入 `ActiveSender`，允许 Tool 主动向 Hub 推送：
 
 ```go
-// go.mod 示例
-require (
-    github.com/fsnotify/fsnotify v1.7.0      // 配置文件热更新
-    github.com/spf13/viper v1.18.0           // YAML 配置解析
-    google.golang.org/grpc v1.60.0           // gRPC 框架
-    github.com/sukasukasuka123/TemplatePoolByGO v0.1.0  // 连接池
-)
+type ActiveHandler interface {
+    OnRegister(sender ActiveSender)
+}
+
+type ActiveSender interface {
+    Send(resp *pb.ToolResponse) error
+}
+```
+
+**注意**：`ToolHandler` 是单例，`OnRegister` 每条流调用一次。不要把 `sender` 存到 handler 字段，应绑定到每条流独立的 goroutine：
+
+```go
+type MyHandler struct{} // 无 sender 字段
+
+func (h *MyHandler) OnRegister(s tool.ActiveSender) {
+    go func() {
+        // 每条流独立的心跳 goroutine，sender 关闭时自动退出
+        for range time.Tick(30 * time.Second) {
+            if err := s.Send(heartbeatResp()); err != nil {
+                return
+            }
+        }
+    }()
+}
+```
+
+### HubHandler 接口
+
+```go
+type HubHandler interface {
+    ServiceName() string
+    Execute(req *pb.ToolRequest) ([]DispatchTarget, error)  // req==nil 表示定时触发
+    OnResults(results []DispatchResult)
+    Addrs() []string
+}
+```
+
+### pb_api 构造函数
+
+```go
+// 构造请求
+pb_api.NewRequest("Hello", params)                    // → (*ToolRequest, error)
+pb_api.MustRequest("Hello", params)                   // → *ToolRequest，失败 panic
+pb_api.Request().Method("Hello").Params(p).Build()    // 链式
+
+// 构造响应（toolName、taskID 必填）
+pb_api.OKResp("hello", req.TaskId, data)              // status="ok"
+pb_api.PartialResp("hello", req.TaskId, data)         // status="partial"
+pb_api.ErrorResp("hello", req.TaskId, code, msg, field) // status="error"
+
+// 链式
+pb_api.Resp().ToolName("hello").TaskID(id).StatusOK().Result(data).Build()
+```
+
+### BaseHub 方法
+
+```go
+// 创建 Hub，同时预热流池
+hub := hub.New(handler)
+
+// 启动 gRPC 监听（阻塞），interval=0 不启动定时广播
+hub.ServeAsync(addr string, interval time.Duration) error
+
+// 主动派发（核心），阻塞等待所有 Tool 响应
+hub.Dispatch(ctx, req) []DispatchResult
+
+// 短连接派发（兼容，低频场景）
+hub.DispatchSimpleCall(ctx, req) (*ToolResponse, error)
+```
+
+### DispatchResult
+
+```go
+type DispatchResult struct {
+    Target    DispatchTarget
+    Responses []*pb.ToolResponse  // 按帧顺序，含 partial 和 ok
+    Err       error
+}
+
+func (r DispatchResult) AllOK() bool  // 无错误且所有帧 status="ok"
 ```
 
 ---
 
-## 🗂️ 目录结构参考
+## 响应状态约定
 
-```
-microHub/
-|   go.mod
-|   go.sum
-|   README.md
-|   
-+---cmd
-|   +---hub
-|   |       hub_test.go
-|   |       main.go
-|   |
-|   \---tools
-|       +---hello
-|       |       main.go
-|       |
-|       \---world
-|               main.go
-|
-+---config
-|       registry.yaml
-|
-+---jsonSchema
-|       schema.go
-|
-+---proto
-|   |   service.proto
-|   |
-|   \---gen
-|       \---proto
-|               service.pb.go
-|               service_grpc.pb.go
-|
-+---root_class
-|   +---hub
-|   |       baseHub.go
-|   |
-|   \---tool
-|           baseTool.go
-|
-+---service_registry
-|       s_ registry.go
-|
-\---test_log
-        Benchmark.log
-        unit_test.log
-```
+| status | 含义 | 框架行为 |
+|--------|------|---------|
+| `"partial"` | 中间帧，任务未结束 | 写入 resChan，继续等待 |
+| `"ok"` | 最终帧，任务成功结束 | 写入 resChan，触发 finish() |
+| `"error"` | 最终帧，任务失败结束 | 写入 resChan，触发 finish() |
+
+**多帧响应必须**：中间帧发 `partial`，最后帧发 `ok` 或 `error`。单帧响应直接发 `ok`。
+
+违反此约定的后果：第一个非 `partial` 帧到达时框架即认为任务结束，后续帧被丢弃并打印 `未知 task_id，忽略`。
 
 ---
 
-> 💡 **核心设计原则**：  
-> 1. **框架轻量**：`BaseHub`/`BaseTool` 只负责转发和错误包装，不干涉业务逻辑  
-> 2. **契约明确**：`registry.yaml` 的 `input_schema`/`output_schema` 是人和工具的契约文档  
-> 3. **业务自主**：参数解析、校验、默认值完全由业务方在 `Execute` 中控制  
-> 4. **错误结构化**：`ErrorDetail` 贯穿全链路，便于定位和监控  
+## 测试
 
-🚀 现在你可以基于此框架快速构建自己的微服务集群了！如有问题，欢迎查阅代码注释或提交 Issue。
+### 单元测试
+
+```bash
+# 单测（框架自动启动 tool 子进程，pool min=2 max=8）
+go test ./cmd/hub -run ^Test -v -timeout 30s
+
+# 竞争检测
+go test ./cmd/hub -race -run ^Test -count=5
+```
+
+### 压测
+
+```bash
+# 先手动启动 tool（不依赖测试框架自动拉起，避免端口冲突）
+go run ./cmd/tools/hello &
+go run ./cmd/tools/world &
+
+# 用生产规格的 pool 压测
+GRPC_POOL_MIN=24 GRPC_POOL_MAX=130 \
+  go test ./cmd/hub -bench=BenchmarkDispatch_Concurrency -benchtime=5s -v
+```
+
+### 参考基准（本机 loopback，pool min=24）
+
+| benchmark | ns/op | 说明 |
+|-----------|-------|------|
+| `Hello` 串行 | ~1.1ms | 单 goroutine，受 RTT 限制 |
+| `Parallel` 并发 | ~350μs | GOMAXPROCS goroutine 并发 |
+| `MultiTool` 广播 | ~1.2ms | hello+world 并发派发，接近单次延迟 |
+| `Concurrency/500` | ~120μs | 500 goroutine 并发，流池充分利用 |
+
+串行延迟高（1.1ms）是单条 goroutine 等待 loopback RTT 的正常表现，不代表吞吐低。`Concurrency/500` 的 120μs 才是流池并发能力的真实体现。
+
+---
+
+## 常见问题
+
+**Q: 为什么只收到第一帧响应？**
+
+Execute 里多帧中间帧必须用 `pb_api.PartialResp`，只有最后一帧才用 `OKResp`。如果全部帧都用 `OKResp`，第一帧到达时框架就认为任务结束，后续帧被丢弃。
+
+**Q: 并发压测时出现 `未知 task_id` 日志？**
+
+所有并发 goroutine 共享同一个 `*pb.ToolRequest` 指针，框架内部 `dispatchAll` 会并发写 `req.TaskId`，导致 task_id 互相覆写。每个 goroutine 应该用独立的 req 对象，或者让框架处理（`Dispatch` 传入的 req 框架会自动 `proto.Clone`）。
+
+**Q: `activeSender.Send` panic: send on closed channel？**
+
+`ToolHandler` 是单例，不要把 `sender` 存到 handler 字段，因为 `OnRegister` 每条流都会调用一次覆盖旧值。正确做法是把 sender 只传给绑定到该流的独立 goroutine，sender 返回 error 时 goroutine 退出。
+
+**Q: 定时广播怎么用？**
+
+`hub.ServeAsync(addr, 5*time.Second)` 第二个参数传非零值，框架每隔该时间调一次 `handler.Execute(nil)`，`nil` 表示定时触发而非外部请求，业务方在 Execute 里通过 `req == nil` 判断并返回广播目标。生产环境如果不需要定时功能传 `0`。
+
+**Q: 热更新如何触发？**
+
+修改 `registry.yaml` 文件后，`service_registry.Watch()` 自动检测文件变化，重建连接池并通过 `changeCh` 通知 Hub 更新路由表，无需重启进程。
+
+---
+
+## Proto 定义
+
+```protobuf
+message ToolRequest {
+    string hub_name = 1;   // 框架自动填充
+    string task_id  = 2;   // 框架自动填充，全局唯一
+    string method   = 3;   // 路由标识，对应 registry.yaml 中的 method 字段
+    bytes  params   = 4;   // JSON 序列化的业务参数
+}
+
+message ToolResponse {
+    string tool_name = 1;
+    string task_id   = 2;
+    string status    = 3;  // "ok" | "partial" | "error"
+    bytes  result    = 4;  // JSON 序列化的业务响应
+    repeated ErrorDetail errors = 5;
+}
+
+message ErrorDetail {
+    string code    = 1;
+    string message = 2;
+    string field   = 3;
+    string help    = 4;
+}
+
+service HubService {
+    rpc DispatchStream (stream ToolRequest) returns (stream ToolResponse);
+    rpc DispatchSimple (ToolRequest)        returns (ToolResponse);
+}
+```

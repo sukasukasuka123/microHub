@@ -2,61 +2,60 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"log"
 	"time"
 
+	"github.com/sukasukasuka123/microHub/pb_api"
 	pb "github.com/sukasukasuka123/microHub/proto/gen/proto"
 	hubbase "github.com/sukasukasuka123/microHub/root_class/hub"
 	registry "github.com/sukasukasuka123/microHub/service_registry"
 )
 
-// ── MainHubHandler ────────────────────────────────────────
-
-const defaultCount = 3
+// ════════════════════════════════════════════════════════════
+//  MainHubHandler
+// ════════════════════════════════════════════════════════════
 
 type MainHubHandler struct{}
 
-func (h *MainHubHandler) ServiceName() string { return "hub" }
+func (h *MainHubHandler) ServiceName() string { return "main_hub" }
 
 // Execute 路由策略：
-//   - req == nil  → 定时触发，广播给所有 tool
-//   - req != nil  → 上游调用，按 service_name 或 method 路由
+//   - req == nil  → 定时触发，广播给所有已注册的 tool
+//   - req != nil  → 按 method 精确路由到单个 tool
 func (h *MainHubHandler) Execute(req *pb.ToolRequest) ([]hubbase.DispatchTarget, error) {
 	if req == nil {
-		log.Println("[Hub] Execute: nil req (定时触发预留)")
-		return nil, nil
-	}
-	if req.ServiceName != "" {
-		return h.routeByName(req)
+		return h.broadcast()
 	}
 	return h.routeByMethod(req)
 }
 
-// OnResults 处理派发结果：日志 + 可扩展的监控/告警
+// OnResults 处理聚合结果：区分成功/失败分别记录。
+// 生产环境可在此接入 metrics / 告警系统。
 func (h *MainHubHandler) OnResults(results []hubbase.DispatchResult) {
 	for _, r := range results {
 		if r.Err != nil {
-			// 派发层错误（如连接失败）
-			log.Printf("[Hub] ✗ dispatch failed addr=%s err=%v", r.Target.Addr, r.Err)
+			log.Printf("[Hub] ✗ addr=%s dispatch err: %v", r.Target.Addr, r.Err)
 			continue
 		}
 		for _, resp := range r.Responses {
-			// ✅ 业务层响应：Result 是 []byte (JSON)
-			if resp.Status == "ok" {
-				log.Printf("[Hub] ✓ [%s] result=%s", resp.ServiceName, string(resp.Result))
-			} else {
-				// 记录结构化错误
+			switch resp.Status {
+			case "ok":
+				log.Printf("[Hub] ✓ tool=%s task=%s result=%s",
+					resp.ToolName, resp.TaskId, string(resp.Result))
+			case "partial":
+				log.Printf("[Hub] ↻ tool=%s task=%s partial=%s",
+					resp.ToolName, resp.TaskId, string(resp.Result))
+			default:
 				for _, e := range resp.Errors {
-					log.Printf("[Hub] ✗ [%s] %s: %s (field=%s)",
-						resp.ServiceName, e.Code, e.Message, e.Field)
+					log.Printf("[Hub] ✗ tool=%s task=%s [%s] %s (field=%s)",
+						resp.ToolName, resp.TaskId, e.Code, e.Message, e.Field)
 				}
 			}
 		}
 	}
 }
 
-// Addrs 返回所有已注册工具的地址，供连接池热更新使用
+// Addrs 返回所有已注册 tool 的地址，供流池热更新使用。
 func (h *MainHubHandler) Addrs() []string {
 	tools := registry.GetAllTools()
 	addrs := make([]string, 0, len(tools))
@@ -68,103 +67,129 @@ func (h *MainHubHandler) Addrs() []string {
 
 // ── 路由辅助 ─────────────────────────────────────────────
 
-// buildRequest 构造下游请求：透传原始请求，确保 Params 是 []byte
-func (h *MainHubHandler) buildRequest(req *pb.ToolRequest, targetName, targetMethod string) *pb.ToolRequest {
-	return &pb.ToolRequest{
-		From:        h.ServiceName(),
-		ServiceName: targetName,
-		Method:      targetMethod,
-		Params:      req.Params, // ✅ 直接透传 []byte，无需转换
-	}
-}
-
-// broadcast 广播请求给所有注册工具（定时触发场景）
-func (h *MainHubHandler) broadcast() []hubbase.DispatchTarget {
-	// ✅ 构造默认参数（JSON 序列化）
-	defaultParams, _ := json.Marshal(map[string]int{"count": defaultCount})
-
-	var targets []hubbase.DispatchTarget
-	for _, t := range registry.GetAllTools() {
-		targets = append(targets, hubbase.DispatchTarget{
-			Addr: t.Addr,
-			Request: &pb.ToolRequest{
-				From:        h.ServiceName(),
-				ServiceName: t.Name,
-				Method:      t.Method,
-				Params:      defaultParams, // ✅ []byte 类型
-			},
-			Stream: true,
-		})
-	}
-	return targets
-}
-
-// routeByName 按 service_name 路由到单个工具
-func (h *MainHubHandler) routeByName(req *pb.ToolRequest) ([]hubbase.DispatchTarget, error) {
-	t, ok := registry.SelectToolByName(req.ServiceName)
-	if !ok {
-		log.Printf("[Hub] tool=%s 未注册", req.ServiceName)
-		return nil, nil
-	}
-	return []hubbase.DispatchTarget{
-		{Addr: t.Addr, Request: h.buildRequest(req, t.Name, t.Method), Stream: true},
-	}, nil
-}
-
-// routeByMethod 按 method 路由到单个工具
+// routeByMethod 按 method 字段精确路由到单个 tool（stream 模式）。
 func (h *MainHubHandler) routeByMethod(req *pb.ToolRequest) ([]hubbase.DispatchTarget, error) {
 	t, ok := registry.SelectToolByMethod(req.Method)
 	if !ok {
-		log.Printf("[Hub] method=%s 未注册", req.Method)
+		log.Printf("[Hub] method=%q 未注册", req.Method)
 		return nil, nil
 	}
+	// hub_name / task_id 由框架层（dispatchAll）自动填充，无需手动设置
 	return []hubbase.DispatchTarget{
-		{Addr: t.Addr, Request: h.buildRequest(req, t.Name, t.Method), Stream: true},
+		{Addr: t.Addr, Request: req, Stream: true},
 	}, nil
 }
 
-// ── main ──────────────────────────────────────────────────
-
-func main() {
-	// 1️⃣ 初始化注册表（监听 yaml 热更新）
-	if err := registry.Init("config/registry.yaml"); err != nil {
-		log.Fatalf("[Hub] 注册表初始化失败: %v", err)
+// broadcast 广播给所有已注册的 tool（定时触发场景）。
+func (h *MainHubHandler) broadcast() ([]hubbase.DispatchTarget, error) {
+	tools := registry.GetAllTools()
+	if len(tools) == 0 {
+		return nil, nil
 	}
 
-	// 2️⃣ 创建 BaseHub 实例（建好连接池，不监听端口）
+	// 每个 tool 单独 Build 一个新的 *pb.ToolRequest。
+	// 不能用值拷贝（req := *defaultReq），因为 protobuf 结构体内含
+	// sync.Mutex（via MessageState），值拷贝会触发 copylocks 警告并引发竞态。
+	targets := make([]hubbase.DispatchTarget, 0, len(tools))
+	for _, t := range tools {
+		req, err := pb_api.Request().
+			Method(t.Method).
+			Params(map[string]int{"count": 1}).
+			Build()
+		if err != nil {
+			return nil, err
+		}
+		targets = append(targets, hubbase.DispatchTarget{
+			Addr:    t.Addr,
+			Request: req,
+			Stream:  true,
+		})
+	}
+	return targets, nil
+}
+
+// ════════════════════════════════════════════════════════════
+//  main
+// ════════════════════════════════════════════════════════════
+
+func main() {
+	// ── 1. 初始化注册表（含热更新监听）──────────────────
+	if err := registry.Init("config/registry.yaml"); err != nil {
+		log.Fatalf("[Hub] registry init: %v", err)
+	}
+
+	// ── 2. 创建 Hub（预热流池）───────────────────────────
 	hub := hubbase.New(&MainHubHandler{})
 
-	// 3️⃣ 启动 gRPC 监听（异步，复用当前实例的连接池）
-	//    定时广播间隔 5s，传 0 则不启动定时派发
+	// ── 3. 启动 gRPC 服务端（5s 定时广播）───────────────
 	go func() {
 		if err := hub.ServeAsync(":50051", 5*time.Second); err != nil {
-			log.Fatalf("[Hub] ServeAsync 退出: %v", err)
+			log.Fatalf("[Hub] ServeAsync: %v", err)
 		}
 	}()
 
-	// 4️⃣ 等待 gRPC 服务就绪（简单 sleep，生产环境可用 TCP 探测）
+	// 等待 gRPC 就绪
 	time.Sleep(100 * time.Millisecond)
 
-	// 5️⃣ 主动发送测试请求（按 service_name 路由）
-	// ✅ 参数需序列化为 []byte
-	helloParams, _ := json.Marshal(map[string]int{"count": defaultCount})
-	worldParams, _ := json.Marshal(map[string]int{"count": defaultCount})
+	// ── 4. 主动派发示例 ───────────────────────────────────
+
+	// 示例 A：向 hello 发 count=3 的请求，等待所有响应帧
+	log.Println("[Hub] === 示例 A: 向 hello 派发 ===")
+	helloReq, _ := pb_api.Request().
+		Method("Hello").
+		Params(map[string]interface{}{
+			"count":  3,
+			"prefix": "Hi",
+		}).
+		Build()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	hub.Dispatch(ctx, &pb.ToolRequest{
-		ServiceName: "hello",
-		Params:      helloParams, // ✅ []byte 类型
-	})
+	results := hub.Dispatch(ctx, helloReq)
 	cancel()
 
-	ctx1, cancel1 := context.WithTimeout(context.Background(), 10*time.Second)
-	hub.Dispatch(ctx1, &pb.ToolRequest{
-		ServiceName: "world",
-		Params:      worldParams, // ✅ []byte 类型
-	})
-	cancel1()
+	log.Printf("[Hub] hello 返回 %d 个目标结果", len(results))
+	for _, r := range results {
+		log.Printf("[Hub]   addr=%s ok=%v responses=%d err=%v",
+			r.Target.Addr, r.AllOK(), len(r.Responses), r.Err)
+	}
 
-	// 6️⃣ 主进程阻塞，保持 gRPC 服务持续运行
-	log.Println("[Hub] 主进程阻塞中，按 Ctrl+C 退出")
+	// 示例 B：向 world 发请求，world 会返回 partial + ok 混合帧
+	log.Println("[Hub] === 示例 B: 向 world 派发（partial 帧演示）===")
+	worldReq, _ := pb_api.Request().
+		Method("World").
+		Params(map[string]interface{}{
+			"name":  "MicroHub",
+			"count": 3,
+		}).
+		Build()
+
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
+	results2 := hub.Dispatch(ctx2, worldReq)
+	cancel2()
+
+	for _, r := range results2 {
+		for i, resp := range r.Responses {
+			log.Printf("[Hub]   frame[%d] status=%s result=%s", i, resp.Status, string(resp.Result))
+		}
+	}
+
+	// 示例 C：走 DispatchSimpleCall（短连接，兼容场景）
+	log.Println("[Hub] === 示例 C: DispatchSimpleCall ===")
+	simpleReq, _ := pb_api.Request().
+		Method("Hello").
+		Params(map[string]int{"count": 1}).
+		Build()
+
+	ctx3, cancel3 := context.WithTimeout(context.Background(), 5*time.Second)
+	resp, err := hub.DispatchSimpleCall(ctx3, simpleReq)
+	cancel3()
+	if err != nil {
+		log.Printf("[Hub] DispatchSimpleCall err: %v", err)
+	} else {
+		log.Printf("[Hub] DispatchSimpleCall result: status=%s result=%s", resp.Status, string(resp.Result))
+	}
+
+	// ── 5. 主进程阻塞，保持服务运行 ─────────────────────
+	log.Println("[Hub] 运行中，Ctrl+C 退出")
 	select {}
 }

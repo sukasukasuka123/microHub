@@ -301,18 +301,54 @@ services:
     - name: "hello"
       addr: "localhost:50052"
       method: "Hello"
-      in_type: object
-      out_type: object
+      
+      # ✅ input_schema: 自定义递归格式
+      input_schema: |
+        {
+          "type": "object",
+          "data": {
+            "count":  { "type": "integer", "default": 1 },
+            "prefix": { "type": "string",  "default": "Hello" }
+          },
+          "required": []
+        }
+      
+      # ✅ output_schema: 同样格式
+      output_schema: |
+        {
+          "type": "object",
+          "data": {
+            "message":  { "type": "string" },
+            "from":     { "type": "string" },
+            "loop_idx": { "type": "integer" },
+            "total":    { "type": "integer" }
+          }
+        }
 
     - name: "world"
       addr: "localhost:50053"
       method: "World"
-      in_type: object
-      out_type: object
+      input_schema: |
+        {
+          "type": "object",
+          "data": {
+            "name":  { "type": "string", "default": "World" },
+            "times": { "type": "integer", "default": 1 }
+          }
+        }
+      output_schema: |
+        {
+          "type": "object",
+          "data": {
+            "greeting":  { "type": "string" },
+            "iteration": { "type": "integer" }
+          }
+        }
 
   hubs:
     - name: "main_hub"
       addr: "localhost:50051"
+      registered_at: "2024-01-01T00:00:00Z"
 
 pool:
   grpc_conn:

@@ -57,7 +57,7 @@ func (h *MainHubHandler) OnResults(results []hubbase.DispatchResult) {
 
 // Addrs 返回所有已注册 tool 的地址，供流池热更新使用。
 func (h *MainHubHandler) Addrs() []string {
-	tools := registry.GetAllTools()
+	tools := registry.GetOnlineTools()
 	addrs := make([]string, 0, len(tools))
 	for _, t := range tools {
 		addrs = append(addrs, t.Addr)
@@ -82,7 +82,7 @@ func (h *MainHubHandler) routeByMethod(req *pb.ToolRequest) ([]hubbase.DispatchT
 
 // broadcast 广播给所有已注册的 tool（定时触发场景）。
 func (h *MainHubHandler) broadcast() ([]hubbase.DispatchTarget, error) {
-	tools := registry.GetAllTools()
+	tools := registry.GetOnlineTools()
 	if len(tools) == 0 {
 		return nil, nil
 	}
@@ -113,12 +113,18 @@ func (h *MainHubHandler) broadcast() ([]hubbase.DispatchTarget, error) {
 // ════════════════════════════════════════════════════════════
 
 func main() {
-	// ── 1. 初始化注册表（含热更新监听）──────────────────
+	// ── 1. 初始化服务注册中心 ───────────────────────────────
 	if err := registry.Init("config/registry.yaml"); err != nil {
 		log.Fatalf("[Hub] registry init: %v", err)
 	}
 
-	// ── 2. 创建 Hub（预热流池）───────────────────────────
+	// ── 启动时探活，标记不可达的地址为 offline ──────────
+	registry.ProbeAllOnStartup()
+
+	// ── 启动后台探活，定期尝试恢复 offline 的地址 ───────
+	registry.StartHealthProbe(context.Background(), 15*time.Second)
+
+	// ── 2. 创建 Hub 实例，传入自定义 Handler ─────────────
 	hub := hubbase.New(&MainHubHandler{})
 
 	// ── 3. 启动 gRPC 服务端（5s 定时广播）───────────────

@@ -75,6 +75,24 @@ func (r *streamResource) Ping(s *SingleStream) error {
 //	entry, err := sp.Get(ctx)        // 取一条流
 //	task, err := entry.Conn.Send(req) // 发任务
 //	sp.Put(entry)                    // 用完归还
+
+// stream_pool.go
+
+// UnhealthyAction 回调返回的决策
+type UnhealthyAction int
+
+const (
+	ActionReconnect   UnhealthyAction = iota // 触发重连（registry.TriggerChange）
+	ActionMarkOffline                        // 标记 offline，放弃这个地址
+	ActionIgnore                             // 什么都不做，让池子自己处理
+)
+
+// HeartbeatFailCallback 心跳失败回调签名
+// addr: 哪个地址挂了
+// err:  具体错误
+// 返回值: 告诉 handleUnhealthy 该怎么处理
+type HeartbeatFailCallback func(addr string, err error) UnhealthyAction
+
 type StreamPool struct {
 	addr   string
 	Conn   *grpc.ClientConn    // 导出：供 callSimple 复用底层连接
@@ -84,14 +102,17 @@ type StreamPool struct {
 
 // NewStreamPool 构造流池并预热 min_size 条流。
 // cfg 直接复用 registry.GrpcPoolConfig，不额外引入新配置项。
-func NewStreamPool(addr string, cfg registry.GrpcPoolConfig) (*StreamPool, error) {
+func NewStreamPool(
+	addr string,
+	cfg registry.GrpcPoolConfig,
+	onHeartbeatFail HeartbeatFailCallback, // ← 可以传 nil，走默认逻辑
+) (*StreamPool, error) {
 	conn, err := grpc.NewClient(addr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return nil, fmt.Errorf("dial %s: %w", addr, err)
 	}
 
-	// 先构造 StreamPool（conn 所有权在此），再构造 streamResource（反向引用 sp）。
 	sp := &StreamPool{addr: addr, Conn: conn, client: pb.NewHubServiceClient(conn)}
 	res := &streamResource{sp: sp}
 	sp.p = pool.NewPool(pool.PoolConfig{
@@ -103,8 +124,13 @@ func NewStreamPool(addr string, cfg registry.GrpcPoolConfig) (*StreamPool, error
 		MaxRetries:       cfg.MaxRetries,
 		RetryInterval:    cfg.RetryInterval(),
 		ReconnectOnGet:   cfg.ReconnectOnGet,
+		MaxWaitQueue:     cfg.MaxWaitQueue,
+		PingInterval:     cfg.PingInterval(),
+
+		OnUnhealthy: func(err error) {
+			sp.handleUnhealthy(err, onHeartbeatFail)
+		},
 	}, res)
-	log.Printf("[StreamPool] addr=%s 已建立 min=%d max=%d", addr, cfg.MinSize, cfg.MaxSize)
 	return sp, nil
 }
 
@@ -132,3 +158,21 @@ func (sp *StreamPool) Close() {
 
 // Addr 返回该流池对应的 Tool 地址。
 func (sp *StreamPool) Addr() string { return sp.addr }
+
+func (sp *StreamPool) handleUnhealthy(err error, cb HeartbeatFailCallback) {
+	action := ActionReconnect
+	if cb != nil {
+		action = cb(sp.addr, err)
+	}
+
+	switch action {
+	case ActionMarkOffline:
+		log.Printf("[StreamPool] addr=%s 标记 offline: %v", sp.addr, err)
+		registry.MarkOffline(sp.addr) // ← Registry 的事，StreamPool 只通知
+
+	case ActionReconnect, ActionIgnore:
+		// Pool 已经在 Ping 失败时驱逐了这条 stream
+		// checkAndAdjust 会自动补充新 stream，这里不需要做任何事
+		log.Printf("[StreamPool] addr=%s stream 故障，pool 自动补充: %v", sp.addr, err)
+	}
+}

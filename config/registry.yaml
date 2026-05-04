@@ -62,3 +62,5 @@ pool:
     max_retries: 3
     retry_interval_ms: 200
     reconnect_on_get: false
+    ping_interval_sec: 30
+    max_wait_queue: 10000    

@@ -1,11 +1,11 @@
 module github.com/sukasukasuka123/microHub
 
-go 1.24.0
+go 1.25
 
 require (
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/spf13/viper v1.21.0
-	github.com/sukasukasuka123/TemplatePoolByGO v0.1.5
+	github.com/sukasukasuka123/TemplatePoolByGO v0.1.7
 	google.golang.org/grpc v1.79.1
 	google.golang.org/protobuf v1.36.11
 )

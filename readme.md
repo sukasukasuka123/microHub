@@ -253,7 +253,108 @@ BaseHub.Dispatch
          {Addr:"localhost:50052", Responses:[3帧], Err:nil}
      }
 ```
+#### 心跳体系解读
 
+这个框架里其实有**两套独立的心跳/探活机制**，职责完全不同，搞清楚层次很重要。
+
+---
+
+##### 第一套：StreamPool 自带的连接级心跳
+
+```go
+sp, err := NewStreamPool(addr, cfg, defaultHeartbeatCallback())
+```
+
+这是**连接池自己的心跳**，针对的是"已经建立的 gRPC 流是否还活着"。
+
+```go
+func defaultHeartbeatCallback() HeartbeatFailCallback {
+    return func(addr string, err error) UnhealthyAction {
+        log.Printf("[poolManager] 心跳失败 addr=%s: %v，标记 offline", addr, err)
+        return ActionMarkOffline  // ← 失败后的动作
+    }
+}
+```
+
+心跳失败时返回 `ActionMarkOffline`，触发的链路是：
+
+```
+StreamPool 心跳失败
+  → HeartbeatFailCallback(addr, err)
+  → ActionMarkOffline
+  → registry.MarkOffline(addr)
+  → notifyChange()
+  → poolManager.rebuild()   // 重建时跳过该 offline 地址，关闭其流池
+```
+
+这套心跳的**触发频率**由 `cfg.PingIntervalSec` 控制（在 `PrintRegistry` 里能看到这个字段），是连接池内部的定时 ping，业务层完全感知不到。
+
+---
+
+##### 第二套：registry 的 TCP 探活（节点级恢复）
+
+```go
+registry.StartHealthProbe(ctx, 15*time.Second)
+```
+
+这套针对的是**已经 offline 的地址**，目的是"等它重新上线"。
+
+```go
+func probeOnce() {
+    // 只遍历 offlineAddrs，不碰 online 的
+    for _, addr := range addrs {
+        if canDial(addr) {    // TCP 握手，2 秒超时
+            MarkOnline(addr)  // → notifyChange() → rebuild() → 重建流池
+        }
+    }
+}
+```
+
+注意 `canDial` 只是 TCP 握手，**不是 gRPC 层的探测**，成本极低。恢复链路：
+
+```
+TCP 探活成功
+  → MarkOnline(addr)
+  → notifyChange()
+  → poolManager.rebuild()  // 新建该地址的 StreamPool
+```
+
+---
+
+##### 两套机制的分工
+
+```
+正常运行中
+  StreamPool ping ──→ 发现流断了 ──→ MarkOffline ──→ 关闭流池
+                                                          ↓
+                                              StartHealthProbe（每15s）
+                                              TCP探测 ──→ 恢复了 ──→ MarkOnline ──→ 重建流池
+```
+
+| | StreamPool 心跳 | TCP 探活 |
+|---|---|---|
+| **探测对象** | 已建立的 gRPC 流 | 已 offline 的地址 |
+| **协议层** | gRPC/应用层 | TCP 层 |
+| **触发方式** | 连接池内部定时 | `StartHealthProbe` goroutine |
+| **频率配置** | `PingIntervalSec` | `StartHealthProbe` 传入的 interval |
+| **失败动作** | `ActionMarkOffline` | 无动作（成功才 `MarkOnline`） |
+| **目的** | 发现故障 | 等待恢复 |
+
+---
+
+##### 还有第三套：启动时同步探活
+
+```go
+registry.ProbeAllOnStartup()  // main 里调用
+```
+
+这是一次性的，在 `hubbase.New` 之前运行，直接标记所有不可达的地址为 offline，让 `poolManager` 初次 `rebuild` 时就跳过它们，**避免建池时卡在不可达地址上**。
+
+---
+
+##### 总结
+
+> **心跳是连接池自带的**，针对活跃连接；**探活是 registry 层的**，针对已断开的节点。两套机制一个负责"发现故障"，一个负责"等待恢复"，形成完整的故障处理闭环。框架对每个微服务节点都有这套保障，不是手动逐个配置的，而是 `poolManager.rebuild` 时统一注入 `defaultHeartbeatCallback`。
 ---
 
 ##### 关键设计决策

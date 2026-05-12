@@ -70,6 +70,10 @@ func (m *poolManager) closeAll() {
 // 心跳失败直接标记 offline，由 registry 的探活 goroutine 负责恢复。
 func defaultHeartbeatCallback() HeartbeatFailCallback {
 	return func(addr string, err error) UnhealthyAction {
+		// 已经是 offline 就不重复打日志和触发 rebuild
+		if registry.IsOffline(addr) {
+			return ActionIgnore // ← 新增：已离线则忽略后续重复回调
+		}
 		log.Printf("[poolManager] 心跳失败 addr=%s: %v，标记 offline", addr, err)
 		return ActionMarkOffline
 	}

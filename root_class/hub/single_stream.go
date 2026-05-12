@@ -2,7 +2,6 @@ package hub
 
 import (
 	"fmt"
-	"io"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -70,6 +69,11 @@ type SingleStream struct {
 
 	// onClose 流关闭时的回调（由 streamPool 注入，用于自我清理）
 	onClose func(s *SingleStream)
+
+	// recvErr 存储 recvLoop 退出时的首个错误（io.EOF 除外）。
+	// 由 recvLoop 写入，由 handleClose 通过 onClose 回调读取，
+	// 两者在同一个 goroutine 的 defer 链中，无并发问题。
+	recvErr error
 }
 
 // NewSingleStream 构造并立即启动 recvLoop。
@@ -136,9 +140,7 @@ func (s *SingleStream) recvLoop() {
 	for {
 		resp, err := s.stream.Recv()
 		if err != nil {
-			if err != io.EOF {
-				log.Printf("[SingleStream] addr=%s recvLoop err: %v", s.addr, err)
-			}
+			s.recvErr = err // ── 新增：存储错误供 handleClose 使用
 			return
 		}
 		s.dispatch(resp)
@@ -195,5 +197,4 @@ func (s *SingleStream) handleClose() {
 	if s.onClose != nil {
 		s.onClose(s)
 	}
-	log.Printf("[SingleStream] addr=%s 流已关闭", s.addr)
 }

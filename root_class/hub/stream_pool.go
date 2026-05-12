@@ -3,7 +3,9 @@ package hub
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
+	"sync"
 
 	pool "github.com/sukasukasuka123/TemplatePoolByGO"
 	"google.golang.org/grpc"
@@ -29,11 +31,14 @@ type streamResource struct {
 
 // Create 创建一条新的双向流（复用 sp.client，无额外 alloc）。
 func (r *streamResource) Create() (*SingleStream, error) {
+	if registry.IsOffline(r.sp.addr) {
+		return nil, fmt.Errorf("addr=%s 已 offline，跳过建流", r.sp.addr)
+	}
 	stream, err := r.sp.client.DispatchStream(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("DispatchStream addr=%s: %w", r.sp.addr, err)
 	}
-	return NewSingleStream(stream, r.sp.addr, nil), nil
+	return NewSingleStream(stream, r.sp.addr, r.sp.onStreamClosed), nil
 }
 
 // Reset 检查流是否仍可用。
@@ -98,6 +103,11 @@ type StreamPool struct {
 	Conn   *grpc.ClientConn    // 导出：供 callSimple 复用底层连接
 	client pb.HubServiceClient // 缓存 client，避免 callSimple 每次 alloc
 	p      *pool.Pool[*SingleStream]
+	// firstClosed 保证同一个 StreamPool 只触发一次 offline 标记。
+	// 当 TCP 连接断开时，池中所有 stream 的 recvLoop 几乎同时报错，
+	// firstClosed 确保只有第一个到达的错误会执行 MarkOffline，
+	// 后续的被 Do 幂等跳过，避免重复通知和日志风暴。
+	firstClosed sync.Once
 }
 
 // NewStreamPool 构造流池并预热 min_size 条流。
@@ -168,11 +178,24 @@ func (sp *StreamPool) handleUnhealthy(err error, cb HeartbeatFailCallback) {
 	switch action {
 	case ActionMarkOffline:
 		log.Printf("[StreamPool] addr=%s 标记 offline: %v", sp.addr, err)
-		registry.MarkOffline(sp.addr) // ← Registry 的事，StreamPool 只通知
+		registry.MarkOffline(sp.addr)
 
-	case ActionReconnect, ActionIgnore:
-		// Pool 已经在 Ping 失败时驱逐了这条 stream
-		// checkAndAdjust 会自动补充新 stream，这里不需要做任何事
+	case ActionReconnect:
+		// Pool 自动补充，打日志
 		log.Printf("[StreamPool] addr=%s stream 故障，pool 自动补充: %v", sp.addr, err)
+
+	case ActionIgnore:
+		// 已经被 onStreamClosed 标记过 offline，不再重复打日志
 	}
+}
+
+func (sp *StreamPool) onStreamClosed(s *SingleStream) {
+	sp.firstClosed.Do(func() {
+		errMsg := "stream closed"
+		if s.recvErr != nil && s.recvErr != io.EOF {
+			errMsg = s.recvErr.Error()
+		}
+		log.Printf("[StreamPool] addr=%s 首条流断开，标记 offline: %s", sp.addr, errMsg)
+		registry.MarkOffline(sp.addr)
+	})
 }

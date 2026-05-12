@@ -54,13 +54,13 @@ services:
 
 pool:
   grpc_conn:
-    min_size: 24
-    max_size: 130
+    min_size: 1
+    max_size: 5
     idle_buffer_factor: 0.55
     survive_time_sec: 180
     monitor_interval_sec: 6
     max_retries: 3
     retry_interval_ms: 200
     reconnect_on_get: false
-    ping_interval_sec: 30
+    ping_interval_sec: 5
     max_wait_queue: 10000    

@@ -183,6 +183,7 @@ func (b *BaseHub) timerLoop(interval time.Duration) {
 				continue
 			}
 			results := b.dispatchAll(b.ctx, targets)
+			log.Printf("[%s] timeloop 完成 targets=%d results=%d", b.handler.ServiceName(), len(targets), len(results))
 			b.handler.OnResults(results)
 		}
 	}

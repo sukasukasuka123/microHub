@@ -34,20 +34,20 @@ func (h *MainHubHandler) Execute(req *pb.ToolRequest) ([]hubbase.DispatchTarget,
 func (h *MainHubHandler) OnResults(results []hubbase.DispatchResult) {
 	for _, r := range results {
 		if r.Err != nil {
-			log.Printf("[Hub] ✗ addr=%s dispatch err: %v", r.Target.Addr, r.Err)
+			log.Printf("[main-OnResults] ✗ addr=%s dispatch err: %v", r.Target.Addr, r.Err)
 			continue
 		}
 		for _, resp := range r.Responses {
 			switch resp.Status {
 			case "ok":
-				log.Printf("[Hub] ✓ tool=%s task=%s result=%s",
+				log.Printf("[main-OnResults] ✓ tool=%s task=%s result=%s",
 					resp.ToolName, resp.TaskId, string(resp.Result))
 			case "partial":
-				log.Printf("[Hub] ↻ tool=%s task=%s partial=%s",
+				log.Printf("[main-OnResults] ↻ tool=%s task=%s partial=%s",
 					resp.ToolName, resp.TaskId, string(resp.Result))
 			default:
 				for _, e := range resp.Errors {
-					log.Printf("[Hub] ✗ tool=%s task=%s [%s] %s (field=%s)",
+					log.Printf("[main-OnResults] ✗ tool=%s task=%s [%s] %s (field=%s)",
 						resp.ToolName, resp.TaskId, e.Code, e.Message, e.Field)
 				}
 			}
@@ -194,8 +194,56 @@ func main() {
 	} else {
 		log.Printf("[Hub] DispatchSimpleCall result: status=%s result=%s", resp.Status, string(resp.Result))
 	}
+	// ── 启动调试监控（每 5 秒打印一次）────────────────────────────
+	monitorCtx, cancelMonitor := context.WithCancel(context.Background())
+	defer cancelMonitor()
+	go startOnlineToolsMonitor(monitorCtx, 5*time.Second)
 
 	// ── 5. 主进程阻塞，保持服务运行 ─────────────────────
 	log.Println("[Hub] 运行中，Ctrl+C 退出")
 	select {}
+}
+
+// ── 调试用：定期打印在线 tool 状态（排查底层/上层问题）────────────────────
+func startOnlineToolsMonitor(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	log.Printf("[Monitor] 启动 online tools 监控，间隔=%v", interval)
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Printf("[Monitor] 监控退出")
+			return
+		case <-ticker.C:
+			printOnlineToolsSnapshot()
+		}
+	}
+}
+
+// printOnlineToolsSnapshot 按 Runtime.Skills() 逻辑打印当前「可见」tools
+func printOnlineToolsSnapshot() {
+	all := registry.GetOnlineTools()
+	if len(all) == 0 {
+		log.Printf("[Monitor] ✓ 在线 tools: 0")
+		return
+	}
+
+	var visible, offline, retired int
+	for _, t := range all {
+		// 1. 先判断底层离线状态
+		if registry.IsOffline(t.Addr) {
+			offline++
+			log.Printf("[Monitor] ✗ offline addr=%s name=%s method=%s", t.Addr, t.Name, t.Method)
+			continue
+		}
+		// 2. 这里可以模拟 retired 过滤（调试时可注释）
+		// if _, blocked := retiredSet[t.Name]; blocked { retired++; continue }
+
+		visible++
+		log.Printf("[Monitor] ✓ visible addr=%s name=%s method=%s", t.Addr, t.Name, t.Method)
+	}
+	log.Printf("[Monitor] 汇总: total=%d visible=%d offline=%d retired=%d",
+		len(all), visible, offline, retired)
 }

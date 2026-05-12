@@ -3,9 +3,12 @@ package service_registry
 import (
 	"context"
 	"log"
-	"net"
 	"sync"
 	"time"
+
+	pb "github.com/sukasukasuka123/microHub/proto/gen/proto"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 var (
@@ -17,18 +20,28 @@ var (
 
 func MarkOffline(addr string) {
 	offlineMu.Lock()
+	alreadyOffline := offlineAddrs[addr]
 	offlineAddrs[addr] = true
 	offlineMu.Unlock()
+
+	if alreadyOffline {
+		return // ← 幂等保护
+	}
 	log.Printf("[Registry] addr=%s → offline", addr)
-	notifyChange() // poolManager 收到信号后 rebuild，跳过这个地址
+	notifyChange()
 }
 
 func MarkOnline(addr string) {
 	offlineMu.Lock()
+	alreadyOnline := !offlineAddrs[addr] // 已经是 online，不重复触发
 	delete(offlineAddrs, addr)
 	offlineMu.Unlock()
+
+	if alreadyOnline {
+		return // ← 幂等保护
+	}
 	log.Printf("[Registry] addr=%s → online", addr)
-	notifyChange() // poolManager 收到信号后 rebuild，重新为这个地址建流池
+	notifyChange()
 }
 
 func IsOffline(addr string) bool {
@@ -79,12 +92,33 @@ func probeOnce() {
 }
 
 // canDial 做一次 TCP 握手，成功即认为地址可达。
+// canDial 改为 gRPC 探活，而非裸 TCP
 func canDial(addr string) bool {
-	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	conn, err := grpc.DialContext(ctx, addr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithBlock(),
+	)
 	if err != nil {
 		return false
 	}
-	conn.Close()
+	defer conn.Close()
+
+	// 方案 A：用标准 gRPC Health Check（需要 Tool 侧实现 health.v1）
+	// hc := grpc_health_v1.NewHealthClient(conn)
+	// resp, err := hc.Check(ctx, &grpc_health_v1.HealthCheckRequest{})
+	// return err == nil && resp.Status == grpc_health_v1.HealthCheckResponse_SERVING
+
+	// 方案 B（更简单，无需改 Tool）：
+	// 尝试建一条双向流，能建就算活着
+	client := pb.NewHubServiceClient(conn)
+	stream, err := client.DispatchStream(ctx)
+	if err != nil {
+		return false
+	}
+	_ = stream.CloseSend()
 	return true
 }
 

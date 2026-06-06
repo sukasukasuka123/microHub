@@ -9,8 +9,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	pb "github.com/sukasukasuka123/microHub/proto/gen/proto"
-	registry "github.com/sukasukasuka123/microHub/service_registry"
+	pb "github.com/RedHuang-0622/microHub/proto/gen/proto"
+	registry "github.com/RedHuang-0622/microHub/service_registry"
 	"google.golang.org/grpc"
 )
 

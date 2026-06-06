@@ -4,7 +4,7 @@ import (
 	"log"
 	"sync"
 
-	registry "github.com/sukasukasuka123/microHub/service_registry"
+	registry "github.com/RedHuang-0622/microHub/service_registry"
 )
 
 type poolManager struct {

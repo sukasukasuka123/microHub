@@ -1,0 +1,17 @@
+# Test logs
+test_log/
+
+# Go build artifacts
+*.exe
+*.test
+*.out
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

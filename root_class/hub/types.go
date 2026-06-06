@@ -1,6 +1,6 @@
 package hub
 
-import pb "github.com/sukasukasuka123/microHub/proto/gen/proto"
+import pb "github.com/RedHuang-0622/microHub/proto/gen/proto"
 
 // DispatchTarget 描述一次派发的目标与请求。
 // Stream=true  → 走长连接双向流池（推荐）

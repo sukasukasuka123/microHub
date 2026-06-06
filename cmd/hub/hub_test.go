@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	pb "github.com/sukasukasuka123/microHub/proto/gen/proto"
-	hubbase "github.com/sukasukasuka123/microHub/root_class/hub"
-	registry "github.com/sukasukasuka123/microHub/service_registry"
+	pb "github.com/RedHuang-0622/microHub/proto/gen/proto"
+	hubbase "github.com/RedHuang-0622/microHub/root_class/hub"
+	registry "github.com/RedHuang-0622/microHub/service_registry"
 )
 
 // ════════════════════════════════════════════════════════════

@@ -7,13 +7,13 @@ import (
 	"log"
 	"sync"
 
-	pool "github.com/sukasukasuka123/TemplatePoolByGO"
+	pool "github.com/RedHuang-0622/TemplatePoolByGO"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
 
-	pb "github.com/sukasukasuka123/microHub/proto/gen/proto"
-	registry "github.com/sukasukasuka123/microHub/service_registry"
+	pb "github.com/RedHuang-0622/microHub/proto/gen/proto"
+	registry "github.com/RedHuang-0622/microHub/service_registry"
 )
 
 // ════════════════════════════════════════════════════════════

@@ -35,7 +35,7 @@ services:
           "type": "object",
           "data": {
             "name":  { "type": "string", "default": "World" },
-            "times": { "type": "integer", "default": 1 }
+            "count": { "type": "integer", "default": 1 }
           }
         }
       output_schema: |
@@ -57,7 +57,7 @@ pool:
     min_size: 24
     max_size: 130
     idle_buffer_factor: 0.55
-    survive_time_sec: 180
+    survive_time_sec: 600
     monitor_interval_sec: 6
     max_retries: 3
     retry_interval_ms: 200

@@ -456,11 +456,13 @@ pool:
     min_size: 24
     max_size: 130
     idle_buffer_factor: 0.55
-    survive_time_sec: 180
+    survive_time_sec: 600
     monitor_interval_sec: 6
     max_retries: 3
     retry_interval_ms: 200
     reconnect_on_get: false
+    ping_interval_sec: 30
+    max_wait_queue: 10000
 ```
 
 ### 2. 实现 Tool（以 hello 为例）
@@ -473,9 +475,9 @@ import (
     "fmt"
     "log"
 
-    pb     "github.com/sukasukasuka123/microHub/proto/gen/proto"
-    pb_api "github.com/sukasukasuka123/microHub/pb_api"
-    "github.com/sukasukasuka123/microHub/root_class/tool"
+    pb     "github.com/RedHuang-0622/microHub/proto/gen/proto"
+    pb_api "github.com/RedHuang-0622/microHub/pb_api"
+    "github.com/RedHuang-0622/microHub/root_class/tool"
 )
 
 type HelloParams struct {
@@ -557,10 +559,10 @@ import (
     "log"
     "time"
 
-    pb     "github.com/sukasukasuka123/microHub/proto/gen/proto"
-    pb_api "github.com/sukasukasuka123/microHub/pb_api"
-    hub    "github.com/sukasukasuka123/microHub/root_class/hub"
-    reg    "github.com/sukasukasuka123/microHub/service_registry"
+    pb     "github.com/RedHuang-0622/microHub/proto/gen/proto"
+    pb_api "github.com/RedHuang-0622/microHub/pb_api"
+    hub    "github.com/RedHuang-0622/microHub/root_class/hub"
+    reg    "github.com/RedHuang-0622/microHub/service_registry"
 )
 
 type MainHubHandler struct{}
@@ -582,7 +584,7 @@ func (h *MainHubHandler) Execute(req *pb.ToolRequest) ([]hub.DispatchTarget, err
 }
 
 func (h *MainHubHandler) broadcast() ([]hub.DispatchTarget, error) {
-    tools := reg.GetAllTools()
+    tools := reg.GetOnlineTools()
     targets := make([]hub.DispatchTarget, 0, len(tools))
     for _, t := range tools {
         // 每个 target 必须有独立的 req，不能共享指针（并发写 TaskId 会竞态）
@@ -617,7 +619,7 @@ func (h *MainHubHandler) OnResults(results []hub.DispatchResult) {
 }
 
 func (h *MainHubHandler) Addrs() []string {
-    tools := reg.GetAllTools()
+    tools := reg.GetOnlineTools()
     addrs := make([]string, 0, len(tools))
     for _, t := range tools {
         addrs = append(addrs, t.Addr)

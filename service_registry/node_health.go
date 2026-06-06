@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	pb "github.com/sukasukasuka123/microHub/proto/gen/proto"
+	pb "github.com/RedHuang-0622/microHub/proto/gen/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )

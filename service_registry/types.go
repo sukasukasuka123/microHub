@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	schema "github.com/sukasukasuka123/microHub/jsonSchema"
+	schema "github.com/RedHuang-0622/microHub/jsonSchema"
 )
 
 type ToolEntry struct {
